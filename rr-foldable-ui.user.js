@@ -20,6 +20,7 @@
     const AUTHOR_NOTE_CLASS = "rrf-foldable-author-note";
     const HIDDEN_HEADER_CLASS = "rrf-foldable-hidden-header";
     const TOUCH_TARGETS_ID = "rrf-foldable-touch-targets";
+    const HIDDEN_FEEDBACK_CLASS = "rrf-foldable-hidden-feedback";
     const MOBILE_LANDSCAPE_QUERY =
         "(orientation: landscape) and (min-width: 600px) and (max-width: 1000px)";
 
@@ -29,6 +30,7 @@
     let authorNoteElements = [];
     let siteHeaderElement = null;
     let touchTargetsElement = null;
+    let feedbackElement = null;
     let readerColors = null;
     let originalReaderColorProperties = null;
     let pageIndex = 0;
@@ -288,6 +290,40 @@
         siteHeaderElement?.classList.add(HIDDEN_HEADER_CLASS);
     }
 
+    function findFeedbackElement() {
+        const candidates = document.querySelectorAll(
+            "button, a, [role='button'], [class*='feedback'], [id*='feedback']"
+        );
+
+        for (const candidate of candidates) {
+            const label = [
+                candidate.textContent,
+                candidate.getAttribute("aria-label"),
+                candidate.getAttribute("title")
+            ]
+                .filter(Boolean)
+                .join(" ");
+            const bounds = candidate.getBoundingClientRect();
+
+            if (
+                /\bbeta\b|\bfeedback\b/i.test(label) &&
+                bounds.width <= 160 &&
+                bounds.height <= 160 &&
+                bounds.right >= window.innerWidth - 160 &&
+                bounds.bottom >= window.innerHeight - 160
+            ) {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    function hideFeedback() {
+        feedbackElement = findFeedbackElement();
+        feedbackElement?.classList.add(HIDDEN_FEEDBACK_CLASS);
+    }
+
     function isTransparentColor(color) {
         return (
             color === "transparent" ||
@@ -384,6 +420,10 @@
             }
 
             .${HIDDEN_HEADER_CLASS} {
+                display: none !important;
+            }
+
+            .${HIDDEN_FEEDBACK_CLASS} {
                 display: none !important;
             }
 
@@ -889,6 +929,7 @@
         contentElement.classList.add(ACTIVE_CONTENT_CLASS);
         document.body.classList.add(ACTIVE_BODY_CLASS);
         hideSiteHeader();
+        hideFeedback();
         addChapterTitle();
         addAuthorNotes();
         createTouchTargets();
@@ -926,6 +967,7 @@
             titleElement.remove();
         }
         siteHeaderElement?.classList.remove(HIDDEN_HEADER_CLASS);
+        feedbackElement?.classList.remove(HIDDEN_FEEDBACK_CLASS);
         for (const authorNoteElement of authorNoteElements) {
             authorNoteElement.remove();
         }
@@ -935,6 +977,7 @@
         contentElement = null;
         controlsElement = null;
         touchTargetsElement = null;
+        feedbackElement = null;
         titleElement = null;
         authorNoteElements = [];
         siteHeaderElement = null;
