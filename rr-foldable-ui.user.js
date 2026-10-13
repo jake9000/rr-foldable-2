@@ -28,6 +28,7 @@
     let controlsElement = null;
     let titleElement = null;
     let authorNoteElements = [];
+    let authorNoteSources = new Map();
     let siteHeaderElement = null;
     let touchTargetsElement = null;
     let feedbackElement = null;
@@ -231,6 +232,7 @@
 
         for (const note of notes) {
             const readerNote = createAuthorNote(note);
+            authorNoteSources.set(readerNote, note);
             if (note.compareDocumentPosition(contentElement) & Node.DOCUMENT_POSITION_FOLLOWING) {
                 before.push(readerNote);
             } else {
@@ -817,11 +819,24 @@
     }
 
     function findCommentSection() {
+        // Royal Road: `<a id="comments">` is an empty anchor; the visible block is
+        // `.portlet.comments-container`, whose `#comment-loader` is lazily filled by
+        // the site's own IntersectionObserver once it scrolls into view.
         const knownContainer = document.querySelector(
-            "#comments, #comments-container, #chapter-comments, .comments-container, .chapter-comments, [data-comment-section], #comment-loader"
+            ".comments-container, #comments-container, #chapter-comments, .chapter-comments, [data-comment-section]"
         );
         if (knownContainer) {
             return knownContainer;
+        }
+
+        const loader = document.querySelector("#comment-loader, .comment-container");
+        if (loader) {
+            return loader.closest(".portlet, section") || loader;
+        }
+
+        const anchor = document.querySelector("#comments");
+        if (anchor) {
+            return anchor.nextElementSibling || anchor;
         }
 
         const heading = [...document.querySelectorAll("h1, h2, h3, h4, h5, h6")].find(
@@ -830,55 +845,213 @@
         return heading?.closest("section, .portlet, .panel, div") || heading || null;
     }
 
-    function scrollToDocumentTarget(target, direction) {
-        window.requestAnimationFrame(() => {
-            window.requestAnimationFrame(() => {
-                if (target instanceof HTMLElement && document.contains(target)) {
-                    window.scrollTo({
-                        top: Math.max(
-                            0,
-                            target.getBoundingClientRect().top +
-                                window.scrollY -
-                                12
-                        ),
-                        left: 0,
-                        behavior: "auto"
-                    });
-                } else if (direction === "next") {
-                    window.scrollTo({
-                        top: document.documentElement.scrollHeight,
-                        left: 0,
-                        behavior: "auto"
-                    });
-                }
-            });
-        });
+    const ATOMIC_ELEMENT_PATTERN = /^(?:img|video|iframe|hr|canvas|svg|picture)$/i;
+
+    function getNodeFragmentRects(node) {
+        if (node.nodeType === Node.TEXT_NODE) {
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            return range.getClientRects();
+        }
+        if (node instanceof Element) {
+            return node.getClientRects();
+        }
+        return [];
     }
 
-    function waitForCommentsAndScroll(loader, direction) {
-        let finished = false;
-        let observer = null;
-        const finish = () => {
-            if (finished) {
-                return;
+    function mapReaderNodeToOriginal(node) {
+        for (const [readerNote, originalNote] of authorNoteSources) {
+            if (!readerNote.contains(node)) {
+                continue;
             }
-            finished = true;
-            observer?.disconnect();
-            scrollToDocumentTarget(
-                document.querySelector("[data-comment-id]") ||
-                    findCommentSection() ||
-                    loader,
-                direction
-            );
+
+            const cloneRoot = readerNote.lastElementChild;
+            if (!cloneRoot || !cloneRoot.contains(node)) {
+                return { node: originalNote, offset: 0 };
+            }
+
+            const path = [];
+            for (let current = node; current !== cloneRoot; current = current.parentNode) {
+                path.unshift(
+                    Array.prototype.indexOf.call(current.parentNode.childNodes, current)
+                );
+            }
+
+            let target = originalNote;
+            for (const index of path) {
+                target = target.childNodes[index];
+                if (!target) {
+                    return { node: originalNote, offset: 0 };
+                }
+            }
+            return { node: target, offset: 0 };
+        }
+
+        return { node, offset: 0 };
+    }
+
+    /**
+     * Finds the first piece of content (text character or image) laid out on the
+     * current reader page, so the normal page can be scrolled to it afterwards.
+     */
+    function captureReaderPosition() {
+        if (!contentElement || contentElement.clientWidth === 0) {
+            return null;
+        }
+
+        const contentLeft = contentElement.getBoundingClientRect().left;
+        const scrollLeft = contentElement.scrollLeft;
+        const pageStart = pageIndex * contentElement.clientWidth - 1;
+        const isOnOrAfterPage = (rects) => {
+            for (const rect of rects) {
+                if (
+                    rect.width > 0 &&
+                    rect.height > 0 &&
+                    rect.left - contentLeft + scrollLeft >= pageStart
+                ) {
+                    return true;
+                }
+            }
+            return false;
         };
 
-        observer = new MutationObserver(() => {
-            if (document.querySelector("[data-comment-id]")) {
-                finish();
+        const walker = document.createTreeWalker(
+            contentElement,
+            NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+            {
+                acceptNode(node) {
+                    if (titleElement && titleElement.contains(node)) {
+                        return NodeFilter.FILTER_REJECT;
+                    }
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        return node.data.trim()
+                            ? NodeFilter.FILTER_ACCEPT
+                            : NodeFilter.FILTER_SKIP;
+                    }
+                    return ATOMIC_ELEMENT_PATTERN.test(node.nodeName)
+                        ? NodeFilter.FILTER_ACCEPT
+                        : NodeFilter.FILTER_SKIP;
+                }
             }
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
-        window.setTimeout(finish, 4000);
+        );
+
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            if (!isOnOrAfterPage(getNodeFragmentRects(node))) {
+                continue;
+            }
+
+            const position = mapReaderNodeToOriginal(node);
+            if (position.node !== node || node.nodeType !== Node.TEXT_NODE) {
+                return position;
+            }
+
+            // This text node straddles the page boundary: binary-search the first
+            // character whose line is on the current page.
+            let low = 1;
+            let high = node.data.length;
+            while (low < high) {
+                const middle = (low + high) >>> 1;
+                const range = document.createRange();
+                range.setStart(node, 0);
+                range.setEnd(node, middle);
+                if (isOnOrAfterPage(range.getClientRects())) {
+                    high = middle;
+                } else {
+                    low = middle + 1;
+                }
+            }
+            return { node, offset: Math.max(0, low - 1) };
+        }
+
+        return null;
+    }
+
+    function getDocumentTop(node, offset) {
+        if (!node || !node.isConnected) {
+            return null;
+        }
+
+        let rect = null;
+        if (node.nodeType === Node.TEXT_NODE) {
+            const length = node.data.length;
+            const range = document.createRange();
+            range.setStart(node, Math.min(offset, length));
+            range.setEnd(node, Math.min(offset + 1, length));
+            rect = range.getBoundingClientRect();
+            if (!rect.height) {
+                rect = node.parentElement?.getBoundingClientRect() || null;
+            }
+        } else if (node instanceof Element) {
+            rect = node.getBoundingClientRect();
+        }
+
+        if (!rect || (!rect.height && !rect.width)) {
+            return null;
+        }
+        return rect.top + window.scrollY;
+    }
+
+    function getFixedHeaderHeight() {
+        let height = 0;
+        for (const element of document.querySelectorAll(
+            ".page-header-top, .page-header-menu, .page-header, .navbar-fixed-top, header"
+        )) {
+            const position = window.getComputedStyle(element).position;
+            if (position !== "fixed" && position !== "sticky") {
+                continue;
+            }
+            const bounds = element.getBoundingClientRect();
+            if (bounds.top <= 1 && bounds.height > 0 && bounds.height <= 200) {
+                height = Math.max(height, bounds.bottom);
+            }
+        }
+        return height;
+    }
+
+    /**
+     * Scrolls the document so the position returned by `resolveTop` sits just
+     * below any fixed header. The scroll is re-applied a few times to absorb
+     * layout shifts (ads, lazily loaded comments, the header becoming fixed),
+     * but gives up as soon as the user scrolls on their own.
+     */
+    function scrollDocumentTo(resolveTop) {
+        let appliedTop = null;
+        let finished = false;
+        const appliedTargets = new Set();
+        const apply = () => {
+            if (
+                finished ||
+                (appliedTop !== null && Math.abs(window.scrollY - appliedTop) > 2)
+            ) {
+                finished = true;
+                return;
+            }
+
+            const top = resolveTop();
+            if (top === null) {
+                return;
+            }
+
+            const target = Math.max(
+                0,
+                Math.round(top - getFixedHeaderHeight() - 12)
+            );
+            if (appliedTargets.has(target)) {
+                // A layout that reacts to scrolling (e.g. a header that becomes
+                // fixed) is bouncing the target around; settle where we are.
+                finished = true;
+                return;
+            }
+            appliedTargets.add(target);
+
+            window.scrollTo({ top: target, left: 0, behavior: "instant" });
+            appliedTop = window.scrollY;
+        };
+
+        window.requestAnimationFrame(() => window.requestAnimationFrame(apply));
+        for (const delay of [250, 750, 1500]) {
+            window.setTimeout(apply, delay);
+        }
     }
 
     function leaveReader(direction) {
@@ -886,33 +1059,21 @@
             return;
         }
 
-        const commentSection =
-            direction === "next" && pageIndex === pageCount - 1
-                ? findCommentSection()
-                : null;
-        const commentLoader =
-            direction === "next" && pageIndex === pageCount - 1
-                ? document.querySelector("#comment-loader")
-                : null;
-        let adjacentElement =
-            direction === "next"
-                ? contentElement.nextElementSibling
-                : contentElement.previousElementSibling;
-        if (!adjacentElement && contentElement.parentElement) {
-            adjacentElement =
-                direction === "next"
-                    ? contentElement.parentElement.nextElementSibling
-                    : contentElement.parentElement.previousElementSibling;
-        }
+        const goToComments = direction === "next" && pageIndex >= pageCount - 1;
+        const position = goToComments ? null : captureReaderPosition();
 
         readerSuspended = true;
         deactivate();
 
-        if (commentLoader instanceof HTMLElement) {
-            commentLoader.click();
-            waitForCommentsAndScroll(commentLoader, direction);
-        } else {
-            scrollToDocumentTarget(commentSection || adjacentElement, direction);
+        if (goToComments) {
+            scrollDocumentTo(() => {
+                const section = findCommentSection();
+                return section
+                    ? getDocumentTop(section, 0)
+                    : document.documentElement.scrollHeight;
+            });
+        } else if (position) {
+            scrollDocumentTo(() => getDocumentTop(position.node, position.offset));
         }
     }
 
@@ -971,6 +1132,7 @@
         for (const authorNoteElement of authorNoteElements) {
             authorNoteElement.remove();
         }
+        authorNoteSources = new Map();
         document.body.classList.remove(ACTIVE_BODY_CLASS);
         document.removeEventListener("keydown", handleKeydown);
         removeReaderColors();
