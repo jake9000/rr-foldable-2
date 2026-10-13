@@ -1620,21 +1620,19 @@
         return undefined;
     }
 
-    // Browsers leave fullscreen on navigation (e.g. to the next chapter) and
-    // only allow re-entering it from a user gesture, so remember the choice
-    // and restore it on the first tap of the next page.
-    document.addEventListener("dblclick", () => {
-        if (document.fullscreenElement) {
-            setFullscreenPreference(false);
-            document.exitFullscreen().catch(() => {});
-        } else {
-            setFullscreenPreference(true);
-            requestFullscreen();
-        }
+    // Royal Road provides its own double-click fullscreen toggle; we only
+    // track it. Browsers leave fullscreen on navigation (e.g. to the next
+    // chapter) and only allow re-entering it from a user gesture, so remember
+    // the state and restore it on the first tap of the next page.
+    let pageUnloading = false;
+    window.addEventListener("pagehide", () => {
+        pageUnloading = true;
     });
     document.addEventListener("fullscreenchange", () => {
         if (document.fullscreenElement) {
             setFullscreenPreference(true);
+        } else if (!pageUnloading) {
+            setFullscreenPreference(false);
         }
     });
     if (wantsFullscreen() && !document.fullscreenElement) {
