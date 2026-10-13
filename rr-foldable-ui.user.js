@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Royal Road Foldable Chapter UI
 // @namespace    https://github.com/royal-road-foldable-ui
-// @version      1.0.2
+// @version      1.0.3
 // @description  Displays Royal Road chapters as two-column, page-flippable spreads on foldable phones in landscape mode.
 // @match        https://www.royalroad.com/fiction/*/chapter/*
 // @match        https://royalroad.com/fiction/*/chapter/*
@@ -623,6 +623,12 @@
 
             .${ACTIVE_CONTENT_CLASS} > * {
                 break-inside: avoid;
+            }
+
+            /* Let prose paragraphs split across columns/pages so a short
+               paragraph doesn't get pushed to its own page ahead of a long one. */
+            .${ACTIVE_CONTENT_CLASS} > p {
+                break-inside: auto;
             }
 
             .${TITLE_CLASS} {
