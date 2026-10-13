@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Royal Road Foldable Chapter UI
 // @namespace    https://github.com/royal-road-foldable-ui
-// @version      1.0.3
+// @version      1.0.4
 // @description  Displays Royal Road chapters as two-column, page-flippable spreads on foldable phones in landscape mode.
 // @match        https://www.royalroad.com/fiction/*/chapter/*
 // @match        https://royalroad.com/fiction/*/chapter/*
@@ -274,6 +274,7 @@
         }
 
         authorNoteElements = [...before, ...after];
+        watchContentImages();
     }
 
     function findNextChapterWidget(content) {
@@ -659,11 +660,14 @@
                 border: 1px solid
                     color-mix(in srgb, var(--rrf-page-foreground) 20%, transparent);
                 border-radius: 0.4rem;
-                break-inside: avoid;
+                -webkit-box-decoration-break: clone;
+                box-decoration-break: clone;
+                break-inside: auto !important;
                 box-sizing: border-box;
                 margin: 0 0 1rem;
                 max-width: 100%;
-                overflow: hidden;
+                overflow: visible !important;
+                overflow-wrap: anywhere;
                 padding: 0.5rem 0.75rem;
                 width: 100%;
             }
@@ -675,14 +679,65 @@
 
             .${AUTHOR_NOTE_CLASS} > :not(summary) {
                 box-sizing: border-box;
-                margin-top: 0.75rem;
+                margin: 0.75rem 0 0 !important;
                 max-width: 100%;
+                padding: 0 !important;
                 width: auto !important;
             }
 
             .${AUTHOR_NOTE_CLASS} * {
+                break-inside: auto !important;
                 box-sizing: border-box;
+                float: none !important;
                 max-width: 100%;
+                min-height: 0 !important;
+                overflow: visible !important;
+            }
+
+            .${AUTHOR_NOTE_CLASS} div,
+            .${AUTHOR_NOTE_CLASS} p,
+            .${AUTHOR_NOTE_CLASS} blockquote,
+            .${AUTHOR_NOTE_CLASS} figure,
+            .${AUTHOR_NOTE_CLASS} figcaption,
+            .${AUTHOR_NOTE_CLASS} table,
+            .${AUTHOR_NOTE_CLASS} thead,
+            .${AUTHOR_NOTE_CLASS} tbody,
+            .${AUTHOR_NOTE_CLASS} tfoot,
+            .${AUTHOR_NOTE_CLASS} tr,
+            .${AUTHOR_NOTE_CLASS} td,
+            .${AUTHOR_NOTE_CLASS} th {
+                display: block !important;
+                height: auto !important;
+                max-height: none !important;
+                width: auto !important;
+            }
+
+            .${AUTHOR_NOTE_CLASS} .tools {
+                display: none !important;
+            }
+
+            .${AUTHOR_NOTE_CLASS} :last-child {
+                margin-bottom: 0 !important;
+            }
+
+            .${ACTIVE_CONTENT_CLASS} img,
+            .${ACTIVE_CONTENT_CLASS} svg,
+            .${ACTIVE_CONTENT_CLASS} video,
+            .${ACTIVE_CONTENT_CLASS} canvas {
+                break-inside: avoid !important;
+                height: auto !important;
+                max-height: calc(100dvh - 10rem) !important;
+                max-width: 100% !important;
+                object-fit: contain !important;
+                vertical-align: bottom;
+                width: auto !important;
+            }
+
+            .${AUTHOR_NOTE_CLASS} img,
+            .${AUTHOR_NOTE_CLASS} svg,
+            .${AUTHOR_NOTE_CLASS} video,
+            .${AUTHOR_NOTE_CLASS} canvas {
+                max-height: calc(100dvh - 15rem) !important;
             }
 
             .${NEXT_CHAPTER_CLASS} {
@@ -866,24 +921,26 @@
     }
 
     function findPageForPosition(position) {
-        if (
-            !contentElement ||
-            !position ||
-            !position.node.isConnected ||
-            !contentElement.contains(position.node)
-        ) {
+        if (!contentElement || !position) {
+            return null;
+        }
+
+        const node = contentElement.contains(position.node)
+            ? position.node
+            : mapOriginalNodeToReader(position.node);
+        if (!node || !node.isConnected || !contentElement.contains(node)) {
             return null;
         }
 
         let rect = null;
-        if (position.node.nodeType === Node.TEXT_NODE) {
-            const length = position.node.data.length;
+        if (node.nodeType === Node.TEXT_NODE) {
+            const length = node.data.length;
             const range = document.createRange();
-            range.setStart(position.node, Math.min(position.offset, length));
-            range.setEnd(position.node, Math.min(position.offset + 1, length));
+            range.setStart(node, Math.min(position.offset, length));
+            range.setEnd(node, Math.min(position.offset + 1, length));
             rect = range.getBoundingClientRect();
         } else {
-            rect = position.node.getBoundingClientRect();
+            rect = node.getBoundingClientRect();
         }
         if (!rect.width && !rect.height) {
             return null;
@@ -929,6 +986,10 @@
         updateControls();
     }
 
+    function handleContentLoad() {
+        recalculatePages(false);
+    }
+
     function watchContentImages() {
         if (!contentElement) {
             return;
@@ -936,7 +997,7 @@
 
         for (const image of contentElement.querySelectorAll("img")) {
             if (!image.complete) {
-                image.addEventListener("load", () => recalculatePages(false), {
+                image.addEventListener("load", handleContentLoad, {
                     once: true
                 });
             }
@@ -1129,7 +1190,7 @@
         return [];
     }
 
-    function mapReaderNodeToOriginal(node) {
+    function mapReaderNodeToOriginal(node, offset = 0) {
         for (const [readerNote, originalNote] of authorNoteSources) {
             if (!readerNote.contains(node)) {
                 continue;
@@ -1154,7 +1215,10 @@
                     return { node: originalNote, offset: 0 };
                 }
             }
-            return { node: target, offset: 0 };
+            return {
+                node: target,
+                offset: target.nodeType === Node.TEXT_NODE ? offset : 0
+            };
         }
 
         if (
@@ -1165,7 +1229,50 @@
             return { node: nextChapterSource, offset: 0 };
         }
 
-        return { node, offset: 0 };
+        return { node, offset };
+    }
+
+    function mapOriginalNodeToReader(node) {
+        for (const [readerNote, originalNote] of authorNoteSources) {
+            if (!originalNote.contains(node)) {
+                continue;
+            }
+
+            if (!readerNote.open) {
+                return readerNote.querySelector("summary") || readerNote;
+            }
+
+            const cloneRoot = readerNote.lastElementChild;
+            if (!cloneRoot) {
+                return readerNote;
+            }
+
+            const path = [];
+            for (let current = node; current !== originalNote; current = current.parentNode) {
+                path.unshift(
+                    Array.prototype.indexOf.call(current.parentNode.childNodes, current)
+                );
+            }
+
+            let target = cloneRoot;
+            for (const index of path) {
+                target = target.childNodes[index];
+                if (!target) {
+                    return readerNote;
+                }
+            }
+            return target;
+        }
+
+        if (
+            nextChapterElement &&
+            nextChapterSource &&
+            nextChapterSource.contains(node)
+        ) {
+            return nextChapterElement;
+        }
+
+        return node;
     }
 
     /**
@@ -1220,27 +1327,27 @@
                 continue;
             }
 
-            const position = mapReaderNodeToOriginal(node);
-            if (position.node !== node || node.nodeType !== Node.TEXT_NODE) {
-                return position;
+            let offset = 0;
+            if (node.nodeType === Node.TEXT_NODE) {
+                // This text node straddles the boundary: binary-search the first
+                // character whose line is inside the target region.
+                const range = document.createRange();
+                range.setStart(node, 0);
+                let low = 1;
+                let high = node.data.length;
+                while (low < high) {
+                    const middle = (low + high) >>> 1;
+                    range.setEnd(node, middle);
+                    if (anyRectMatches(range.getClientRects())) {
+                        high = middle;
+                    } else {
+                        low = middle + 1;
+                    }
+                }
+                offset = Math.max(0, low - 1);
             }
 
-            // This text node straddles the boundary: binary-search the first
-            // character whose line is inside the target region.
-            const range = document.createRange();
-            range.setStart(node, 0);
-            let low = 1;
-            let high = node.data.length;
-            while (low < high) {
-                const middle = (low + high) >>> 1;
-                range.setEnd(node, middle);
-                if (anyRectMatches(range.getClientRects())) {
-                    high = middle;
-                } else {
-                    low = middle + 1;
-                }
-            }
-            return { node, offset: Math.max(0, low - 1) };
+            return mapReaderNodeToOriginal(node, offset);
         }
 
         return null;
@@ -1264,6 +1371,29 @@
         );
     }
 
+    function getDocumentRoots(content) {
+        const notes = findAuthorNotes(content);
+        const before = [];
+        const after = [];
+        for (const note of notes) {
+            if (
+                note.compareDocumentPosition(content) &
+                Node.DOCUMENT_POSITION_FOLLOWING
+            ) {
+                before.push(note);
+            } else {
+                after.push(note);
+            }
+        }
+        const nextWidget = findNextChapterWidget(content);
+        return [
+            ...before,
+            content,
+            ...after,
+            ...(nextWidget ? [nextWidget] : [])
+        ];
+    }
+
     /**
      * First content visible below the header in the normal (non-reader)
      * layout, so the reader can open on the page the user was looking at.
@@ -1273,11 +1403,24 @@
         // above the target line, so that leaving and re-entering the reader
         // round-trips to the same line.
         const topEdge = getFixedHeaderHeight() + 13;
-        return findFirstContentPosition(
-            content,
-            (rect) => rect.bottom > topEdge,
-            (bounds) => bounds.bottom <= topEdge
-        );
+        for (const root of getDocumentRoots(content)) {
+            const bounds = root.getBoundingClientRect();
+            if (
+                (bounds.width > 0 || bounds.height > 0) &&
+                bounds.bottom <= topEdge
+            ) {
+                continue;
+            }
+            const position = findFirstContentPosition(
+                root,
+                (rect) => rect.bottom > topEdge,
+                (b) => b.bottom <= topEdge
+            );
+            if (position) {
+                return position;
+            }
+        }
+        return null;
     }
 
     function sampleDocumentPosition() {
@@ -1304,7 +1447,11 @@
     function takeDocumentPosition(content) {
         const sampled = documentPositionSample?.position;
         documentPositionSample = null;
-        if (sampled && sampled.node.isConnected && content.contains(sampled.node)) {
+        if (
+            sampled &&
+            sampled.node.isConnected &&
+            getDocumentRoots(content).some((root) => root.contains(sampled.node))
+        ) {
             return sampled;
         }
         return captureDocumentPosition(content);
@@ -1485,6 +1632,7 @@
         createTouchTargets();
         createControls();
         watchContentImages();
+        contentElement.addEventListener("load", handleContentLoad, true);
         contentElement.addEventListener("scroll", handleScroll, { passive: true });
         // Swipes are also recognised on the edge touch targets, otherwise a
         // vertical swipe starting near either edge would be swallowed.
@@ -1508,6 +1656,7 @@
     function deactivate() {
         if (contentElement) {
             contentElement.classList.remove(ACTIVE_CONTENT_CLASS);
+            contentElement.removeEventListener("load", handleContentLoad, true);
             contentElement.removeEventListener("scroll", handleScroll);
             contentElement.removeEventListener("touchstart", handleTouchStart);
             contentElement.removeEventListener("touchend", handleTouchEnd);
