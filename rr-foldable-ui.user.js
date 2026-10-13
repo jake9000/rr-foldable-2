@@ -1630,6 +1630,8 @@
     });
     document.addEventListener("fullscreenchange", () => {
         if (document.fullscreenElement) {
+            // Double-clicking selects a word; drop it when entering fullscreen.
+            window.getSelection()?.removeAllRanges();
             setFullscreenPreference(true);
         } else if (!pageUnloading) {
             setFullscreenPreference(false);
