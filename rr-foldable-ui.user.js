@@ -762,11 +762,28 @@
         deactivate();
 
         const exitTarget = commentSection || adjacentElement;
-        if (exitTarget instanceof HTMLElement) {
+        window.requestAnimationFrame(() => {
             window.requestAnimationFrame(() => {
-                exitTarget.scrollIntoView({ block: "start" });
+                if (exitTarget instanceof HTMLElement && document.contains(exitTarget)) {
+                    window.scrollTo({
+                        top: Math.max(
+                            0,
+                            exitTarget.getBoundingClientRect().top +
+                                window.scrollY -
+                                12
+                        ),
+                        left: 0,
+                        behavior: "auto"
+                    });
+                } else if (direction === "next") {
+                    window.scrollTo({
+                        top: document.documentElement.scrollHeight,
+                        left: 0,
+                        behavior: "auto"
+                    });
+                }
             });
-        }
+        });
     }
 
     function activate(content) {
