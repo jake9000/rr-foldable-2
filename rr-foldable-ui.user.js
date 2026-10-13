@@ -848,6 +848,12 @@
     }
 
     function refresh() {
+        if (isCommentLink()) {
+            readerSuspended = false;
+            deactivate();
+            return;
+        }
+
         if (!isSupportedViewport()) {
             readerSuspended = false;
             deactivate();
@@ -871,6 +877,10 @@
         refreshTimer = window.setTimeout(refresh, 100);
     }
 
+    function isCommentLink() {
+        return new URL(window.location.href).searchParams.has("comment");
+    }
+
     window.addEventListener("resize", () => {
         window.clearTimeout(resizeTimer);
         resizeTimer = window.setTimeout(() => {
@@ -882,6 +892,7 @@
         }, 150);
     });
     window.addEventListener("orientationchange", scheduleRefresh);
+    window.addEventListener("popstate", scheduleRefresh);
     document.addEventListener("DOMContentLoaded", refresh, { once: true });
     new MutationObserver((mutations) => {
         if (
