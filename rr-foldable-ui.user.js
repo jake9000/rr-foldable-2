@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Royal Road Foldable Chapter UI
 // @namespace    https://github.com/royal-road-foldable-ui
-// @version      1.0.0
+// @version      1.0.1
 // @description  Displays Royal Road chapters as two-column, page-flippable spreads on foldable phones in landscape mode.
 // @match        https://www.royalroad.com/fiction/*/chapter/*
 // @match        https://royalroad.com/fiction/*/chapter/*
@@ -18,6 +18,7 @@
     const STYLE_ID = "rrf-foldable-styles";
     const TITLE_CLASS = "rrf-foldable-title";
     const AUTHOR_NOTE_CLASS = "rrf-foldable-author-note";
+    const NEXT_CHAPTER_CLASS = "rrf-foldable-next-chapter";
     const HIDDEN_HEADER_CLASS = "rrf-foldable-hidden-header";
     const TOUCH_TARGETS_ID = "rrf-foldable-touch-targets";
     const HIDDEN_FEEDBACK_CLASS = "rrf-foldable-hidden-feedback";
@@ -29,6 +30,9 @@
     let titleElement = null;
     let authorNoteElements = [];
     let authorNoteSources = new Map();
+    let nextChapterElement = null;
+    let nextChapterSource = null;
+    let nextChapterObserver = null;
     let siteHeaderElement = null;
     let touchTargetsElement = null;
     let feedbackElement = null;
@@ -46,6 +50,15 @@
     // page change while the layout is known to be valid. Used to keep the
     // reader on the same content across reflows and when leaving the reader.
     let lastReaderPosition = null;
+    let cancelPendingDocumentScroll = null;
+    // Content at the top of the normal page, sampled when scrolling stops.
+    // A viewport change keeps scrollY but reflows the text, so by the time the
+    // reader activates the content under the header has already moved; this
+    // remembers what the user was actually looking at. `width` tags the
+    // sample so ones taken mid-resize can be rejected.
+    let documentPositionSample = null;
+    let documentScrollTimer = null;
+    let suppressScrollSamplingUntil = 0;
 
     function isSupportedViewport() {
         return window.matchMedia(MOBILE_LANDSCAPE_QUERY).matches;
@@ -250,10 +263,138 @@
             contentElement.prepend(note);
         }
         for (const note of after) {
-            contentElement.appendChild(note);
+            if (
+                nextChapterElement &&
+                nextChapterElement.parentElement === contentElement
+            ) {
+                contentElement.insertBefore(note, nextChapterElement);
+            } else {
+                contentElement.appendChild(note);
+            }
         }
 
         authorNoteElements = [...before, ...after];
+    }
+
+    function findNextChapterWidget(content) {
+        const candidates = document.querySelectorAll(
+            "div[class*='bg-info'], div.alert-info, div.alert, [class*='next-chapter'], div"
+        );
+
+        for (const candidate of candidates) {
+            if (!(candidate instanceof HTMLElement)) {
+                continue;
+            }
+            if (
+                candidate === document.body ||
+                candidate === content ||
+                candidate.id === CONTROLS_ID ||
+                candidate.id === TOUCH_TARGETS_ID ||
+                candidate.classList.contains(NEXT_CHAPTER_CLASS) ||
+                candidate.classList.contains(AUTHOR_NOTE_CLASS) ||
+                candidate.closest(".author-note, .portlet-body") ||
+                (content && content.contains(candidate))
+            ) {
+                continue;
+            }
+
+            const text = candidate.textContent || "";
+            if (!/next\s+chapter\s*:/i.test(text)) {
+                continue;
+            }
+
+            const hasTime = Boolean(candidate.querySelector("time"));
+            const hasClock = Boolean(
+                candidate.querySelector(".fa-clock, [class*='fa-clock'], [class*='clock']")
+            );
+            if (!hasTime && !hasClock) {
+                continue;
+            }
+
+            if (
+                candidate.querySelectorAll("p, .chapter-content, #comments, [data-comment-id]").length > 0 ||
+                text.length > 500
+            ) {
+                continue;
+            }
+
+            if (
+                candidate.matches("[class*='bg-info'], .alert-info, .alert") ||
+                (hasClock && hasTime)
+            ) {
+                return candidate;
+            }
+        }
+
+        for (const timeEl of document.querySelectorAll("time")) {
+            if (content && content.contains(timeEl)) {
+                continue;
+            }
+            let parent = timeEl.parentElement;
+            while (parent && parent !== document.body && parent !== content) {
+                const text = parent.textContent || "";
+                if (/next\s+chapter\s*:/i.test(text)) {
+                    if (
+                        parent.querySelectorAll("p, .chapter-content, #comments, [data-comment-id]").length === 0 &&
+                        text.length < 500
+                    ) {
+                        return parent;
+                    }
+                }
+                parent = parent.parentElement;
+            }
+        }
+
+        return null;
+    }
+
+    function createNextChapterWidget(sourceWidget) {
+        const widget = sourceWidget.cloneNode(true);
+        for (const elementWithId of [widget, ...widget.querySelectorAll("[id]")]) {
+            elementWithId.removeAttribute("id");
+        }
+        widget.classList.add(NEXT_CHAPTER_CLASS);
+        return widget;
+    }
+
+    function addNextChapterWidget() {
+        if (!contentElement || nextChapterElement) {
+            return;
+        }
+
+        const sourceWidget = findNextChapterWidget(contentElement);
+        if (!sourceWidget) {
+            return;
+        }
+
+        nextChapterSource = sourceWidget;
+        nextChapterElement = createNextChapterWidget(sourceWidget);
+        contentElement.appendChild(nextChapterElement);
+
+        nextChapterObserver = new MutationObserver(() => {
+            if (!nextChapterElement || !sourceWidget) {
+                return;
+            }
+            const sourceTimes = sourceWidget.querySelectorAll("time");
+            const targetTimes = nextChapterElement.querySelectorAll("time");
+            if (sourceTimes.length === targetTimes.length && sourceTimes.length > 0) {
+                for (let i = 0; i < sourceTimes.length; i++) {
+                    if (targetTimes[i].textContent !== sourceTimes[i].textContent) {
+                        targetTimes[i].textContent = sourceTimes[i].textContent;
+                    }
+                }
+            } else if (sourceWidget.textContent !== nextChapterElement.textContent) {
+                nextChapterElement.innerHTML = sourceWidget.innerHTML;
+                for (const el of nextChapterElement.querySelectorAll("[id]")) {
+                    el.removeAttribute("id");
+                }
+            }
+        });
+        nextChapterObserver.observe(sourceWidget, {
+            childList: true,
+            subtree: true,
+            characterData: true
+        });
     }
 
     function findSiteHeader() {
@@ -522,6 +663,46 @@
                 max-width: 100%;
             }
 
+            .${NEXT_CHAPTER_CLASS} {
+                background: color-mix(
+                    in srgb,
+                    var(--rrf-page-foreground) 8%,
+                    var(--rrf-page-background)
+                ) !important;
+                border: 1px solid
+                    color-mix(in srgb, var(--rrf-page-foreground) 20%, transparent) !important;
+                border-radius: 0.4rem !important;
+                break-inside: avoid !important;
+                box-sizing: border-box !important;
+                color: var(--rrf-page-foreground) !important;
+                display: flex !important;
+                align-items: center !important;
+                gap: 0.75rem !important;
+                line-height: 1.4 !important;
+                margin: 1.5rem 0 1rem !important;
+                max-width: 100% !important;
+                overflow: hidden !important;
+                padding: 0.75rem 1rem !important;
+                width: 100% !important;
+            }
+
+            .${NEXT_CHAPTER_CLASS} * {
+                box-sizing: border-box !important;
+                max-width: 100% !important;
+            }
+
+            .${NEXT_CHAPTER_CLASS} [class*='text-info'],
+            .${NEXT_CHAPTER_CLASS} i.fa-clock,
+            .${NEXT_CHAPTER_CLASS} [class*='clock'] {
+                color: color-mix(in srgb, var(--rrf-page-foreground) 75%, #3b82f6) !important;
+                flex-shrink: 0 !important;
+            }
+
+            .${NEXT_CHAPTER_CLASS} .flex-grow {
+                flex-grow: 1 !important;
+                min-width: 0 !important;
+            }
+
             #${TOUCH_TARGETS_ID} {
                 bottom: 4rem;
                 display: flex;
@@ -710,15 +891,14 @@
             1,
             Math.ceil(contentElement.scrollWidth / contentElement.clientWidth)
         );
-        if (resetToStart) {
+        // Open on the page holding the tracked content: after a reflow (resize,
+        // image load, note toggle, ads) that is the page being read; on
+        // activation it is whatever was at the top of the normal page.
+        const restoredPage = findPageForPosition(lastReaderPosition);
+        if (restoredPage !== null) {
+            pageIndex = restoredPage;
+        } else if (resetToStart) {
             pageIndex = 0;
-        } else {
-            // After a reflow (resize, image load, note toggle, ads) keep showing
-            // the content the reader was on rather than the same page number.
-            const restoredPage = findPageForPosition(lastReaderPosition);
-            if (restoredPage !== null) {
-                pageIndex = restoredPage;
-            }
         }
         pageIndex = Math.max(0, Math.min(pageIndex, pageCount - 1));
 
@@ -963,29 +1143,27 @@
             return { node: target, offset: 0 };
         }
 
+        if (
+            nextChapterElement &&
+            nextChapterSource &&
+            nextChapterElement.contains(node)
+        ) {
+            return { node: nextChapterSource, offset: 0 };
+        }
+
         return { node, offset: 0 };
     }
 
     /**
-     * Finds the first piece of content (text character or image) laid out on the
-     * current reader page, so the normal page can be scrolled to it afterwards.
+     * Finds the first piece of content (text character or image) inside `root`
+     * for which `rectMatches` holds. `elementIsBefore(bounds)` is a pre-filter
+     * that lets whole subtrees be skipped. Content order must agree with the
+     * geometric order implied by the predicates (true for normal flow).
      */
-    function captureReaderPosition() {
-        if (!contentElement || contentElement.clientWidth === 0) {
-            return null;
-        }
-
-        const contentLeft = contentElement.getBoundingClientRect().left;
-        const scrollLeft = contentElement.scrollLeft;
-        const pageStart = pageIndex * contentElement.clientWidth - 1;
-        const toContentX = (clientX) => clientX - contentLeft + scrollLeft;
-        const isOnOrAfterPage = (rects) => {
+    function findFirstContentPosition(root, rectMatches, elementIsBefore) {
+        const anyRectMatches = (rects) => {
             for (const rect of rects) {
-                if (
-                    rect.width > 0 &&
-                    rect.height > 0 &&
-                    toContentX(rect.left) >= pageStart
-                ) {
+                if (rect.width > 0 && rect.height > 0 && rectMatches(rect)) {
                     return true;
                 }
             }
@@ -993,7 +1171,7 @@
         };
 
         const walker = document.createTreeWalker(
-            contentElement,
+            root,
             NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
             {
                 acceptNode(node) {
@@ -1008,13 +1186,13 @@
                     if (ATOMIC_ELEMENT_PATTERN.test(node.nodeName)) {
                         return NodeFilter.FILTER_ACCEPT;
                     }
-                    // Cheap pre-filter: a block whose bounding box (the union
-                    // of all its column fragments) ends before this page
-                    // cannot contain anything on it, so skip its subtree.
+                    // The bounding box is the union of all fragments (columns
+                    // included), so a block that ends before the target region
+                    // cannot contain anything in it: skip its subtree.
                     const bounds = node.getBoundingClientRect();
                     if (
                         (bounds.width > 0 || bounds.height > 0) &&
-                        toContentX(bounds.right) < pageStart
+                        elementIsBefore(bounds)
                     ) {
                         return NodeFilter.FILTER_REJECT;
                     }
@@ -1024,7 +1202,7 @@
         );
 
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-            if (!isOnOrAfterPage(getNodeFragmentRects(node))) {
+            if (!anyRectMatches(getNodeFragmentRects(node))) {
                 continue;
             }
 
@@ -1033,8 +1211,8 @@
                 return position;
             }
 
-            // This text node straddles the page boundary: binary-search the first
-            // character whose line is on the current page.
+            // This text node straddles the boundary: binary-search the first
+            // character whose line is inside the target region.
             const range = document.createRange();
             range.setStart(node, 0);
             let low = 1;
@@ -1042,7 +1220,7 @@
             while (low < high) {
                 const middle = (low + high) >>> 1;
                 range.setEnd(node, middle);
-                if (isOnOrAfterPage(range.getClientRects())) {
+                if (anyRectMatches(range.getClientRects())) {
                     high = middle;
                 } else {
                     low = middle + 1;
@@ -1052,6 +1230,70 @@
         }
 
         return null;
+    }
+
+    /** First content on the current reader page (reader must be active). */
+    function captureReaderPosition() {
+        if (!contentElement || contentElement.clientWidth === 0) {
+            return null;
+        }
+
+        const contentLeft = contentElement.getBoundingClientRect().left;
+        const scrollLeft = contentElement.scrollLeft;
+        const pageStart = pageIndex * contentElement.clientWidth - 1;
+        const toContentX = (clientX) => clientX - contentLeft + scrollLeft;
+
+        return findFirstContentPosition(
+            contentElement,
+            (rect) => toContentX(rect.left) >= pageStart,
+            (bounds) => toContentX(bounds.right) < pageStart
+        );
+    }
+
+    /**
+     * First content visible below the header in the normal (non-reader)
+     * layout, so the reader can open on the page the user was looking at.
+     */
+    function captureDocumentPosition(content) {
+        // A line must show more than the 12px gap scrollDocumentTo() leaves
+        // above the target line, so that leaving and re-entering the reader
+        // round-trips to the same line.
+        const topEdge = getFixedHeaderHeight() + 13;
+        return findFirstContentPosition(
+            content,
+            (rect) => rect.bottom > topEdge,
+            (bounds) => bounds.bottom <= topEdge
+        );
+    }
+
+    function sampleDocumentPosition() {
+        if (contentElement) {
+            return;
+        }
+        if (
+            documentPositionSample &&
+            documentPositionSample.width !== window.innerWidth
+        ) {
+            // Viewport is changing; refresh()/activate() will reset sampling.
+            return;
+        }
+
+        const content = findChapterContent();
+        if (content) {
+            documentPositionSample = {
+                position: captureDocumentPosition(content),
+                width: window.innerWidth
+            };
+        }
+    }
+
+    function takeDocumentPosition(content) {
+        const sampled = documentPositionSample?.position;
+        documentPositionSample = null;
+        if (sampled && sampled.node.isConnected && content.contains(sampled.node)) {
+            return sampled;
+        }
+        return captureDocumentPosition(content);
     }
 
     function getDocumentTop(node, offset) {
@@ -1106,6 +1348,7 @@
         let appliedTop = null;
         let finished = false;
         const appliedTargets = new Set();
+        const timers = [];
         const apply = () => {
             if (
                 finished ||
@@ -1134,12 +1377,22 @@
 
             window.scrollTo({ top: target, left: 0, behavior: "instant" });
             appliedTop = window.scrollY;
+            // Our own scroll events must not replace the exact position sample.
+            suppressScrollSamplingUntil = performance.now() + 300;
         };
 
+        cancelPendingDocumentScroll?.();
         window.requestAnimationFrame(() => window.requestAnimationFrame(apply));
         for (const delay of [250, 750, 1500]) {
-            window.setTimeout(apply, delay);
+            timers.push(window.setTimeout(apply, delay));
         }
+        cancelPendingDocumentScroll = () => {
+            finished = true;
+            for (const timer of timers) {
+                window.clearTimeout(timer);
+            }
+            cancelPendingDocumentScroll = null;
+        };
     }
 
     function leaveReader(direction) {
@@ -1166,18 +1419,45 @@
     }
 
     function scrollToReaderPosition(position) {
-        if (position) {
-            scrollDocumentTo(() => getDocumentTop(position.node, position.offset));
+        if (!position) {
+            return;
         }
+        scrollDocumentTo(() => getDocumentTop(position.node, position.offset));
+        // Remember the exact position rather than re-deriving it from the
+        // scrolled geometry later, so re-entering the reader (unfolding)
+        // returns to the same page even when it sits on a page boundary.
+        documentPositionSample = { position, width: window.innerWidth };
     }
 
     function activate(content) {
         if (contentElement === content) {
-            recalculatePages(false);
+            let changed = false;
+            if (
+                !authorNoteElements.length &&
+                findAuthorNotes(contentElement).length > 0
+            ) {
+                addAuthorNotes();
+                changed = true;
+            }
+            if (!nextChapterElement && findNextChapterWidget(contentElement)) {
+                addNextChapterWidget();
+                changed = true;
+            }
+            if (changed) {
+                recalculatePages(false);
+            }
             return;
         }
 
         deactivate();
+        // Work out which content is at the top of the screen, then reset the
+        // document scroll before taking the chapter out of the flow. Leaving
+        // the document scrolled deep (e.g. after reading in portrait) while
+        // the page collapses to header + footer is what let the footer show
+        // through on Firefox for Android; a fresh load never has this problem.
+        const documentPosition = takeDocumentPosition(content);
+        cancelPendingDocumentScroll?.();
+        window.scrollTo({ top: 0, left: 0, behavior: "instant" });
         addStyles();
         contentElement = content;
         applyReaderColors(contentElement);
@@ -1187,6 +1467,7 @@
         hideFeedback();
         addChapterTitle();
         addAuthorNotes();
+        addNextChapterWidget();
         createTouchTargets();
         createControls();
         watchContentImages();
@@ -1206,7 +1487,7 @@
         }
         document.addEventListener("keydown", handleKeydown);
         pageIndex = 0;
-        lastReaderPosition = null;
+        lastReaderPosition = documentPosition;
         window.requestAnimationFrame(() => recalculatePages(true));
     }
 
@@ -1233,6 +1514,15 @@
             authorNoteElement.remove();
         }
         authorNoteSources = new Map();
+        if (nextChapterElement) {
+            nextChapterElement.remove();
+        }
+        if (nextChapterObserver) {
+            nextChapterObserver.disconnect();
+            nextChapterObserver = null;
+        }
+        nextChapterElement = null;
+        nextChapterSource = null;
         document.body.classList.remove(ACTIVE_BODY_CLASS);
         document.removeEventListener("keydown", handleKeydown);
         removeReaderColors();
@@ -1257,10 +1547,13 @@
         if (!isSupportedViewport()) {
             // Folding the phone / rotating to portrait leaves the reader too:
             // land on the content that was being read, not the page top.
-            const position = contentElement ? lastReaderPosition : null;
             readerSuspended = false;
-            deactivate();
-            scrollToReaderPosition(position);
+            if (contentElement) {
+                const position = lastReaderPosition;
+                deactivate();
+                documentPositionSample = null;
+                scrollToReaderPosition(position);
+            }
             return;
         }
 
@@ -1299,6 +1592,20 @@
             }
         }, 150);
     });
+    window.addEventListener(
+        "scroll",
+        () => {
+            if (contentElement) {
+                return;
+            }
+            window.clearTimeout(documentScrollTimer);
+            if (performance.now() < suppressScrollSamplingUntil) {
+                return;
+            }
+            documentScrollTimer = window.setTimeout(sampleDocumentPosition, 150);
+        },
+        { passive: true }
+    );
     window.addEventListener("orientationchange", scheduleRefresh);
     window.addEventListener("popstate", scheduleRefresh);
     document.addEventListener("DOMContentLoaded", refresh, { once: true });
