@@ -42,6 +42,10 @@
     let touchStartX = null;
     let touchStartY = null;
     let readerSuspended = false;
+    // Content position of the current page, captured on every user-initiated
+    // page change while the layout is known to be valid. Used to keep the
+    // reader on the same content across reflows and when leaving the reader.
+    let lastReaderPosition = null;
 
     function isSupportedViewport() {
         return window.matchMedia(MOBILE_LANDSCAPE_QUERY).matches;
@@ -233,6 +237,8 @@
         for (const note of notes) {
             const readerNote = createAuthorNote(note);
             authorNoteSources.set(readerNote, note);
+            // Expanding/collapsing a note reflows the columns.
+            readerNote.addEventListener("toggle", () => recalculatePages(false));
             if (note.compareDocumentPosition(contentElement) & Node.DOCUMENT_POSITION_FOLLOWING) {
                 before.push(readerNote);
             } else {
@@ -654,11 +660,45 @@
         }
 
         pageIndex = Math.max(0, Math.min(nextIndex, pageCount - 1));
+        // The capture uses pageIndex (not scrollLeft), so it is valid even
+        // before the smooth scroll reaches the target page.
+        lastReaderPosition = captureReaderPosition();
         contentElement.scrollTo({
             left: pageIndex * contentElement.clientWidth,
             behavior
         });
         updateControls();
+    }
+
+    function findPageForPosition(position) {
+        if (
+            !contentElement ||
+            !position ||
+            !position.node.isConnected ||
+            !contentElement.contains(position.node)
+        ) {
+            return null;
+        }
+
+        let rect = null;
+        if (position.node.nodeType === Node.TEXT_NODE) {
+            const length = position.node.data.length;
+            const range = document.createRange();
+            range.setStart(position.node, Math.min(position.offset, length));
+            range.setEnd(position.node, Math.min(position.offset + 1, length));
+            rect = range.getBoundingClientRect();
+        } else {
+            rect = position.node.getBoundingClientRect();
+        }
+        if (!rect.width && !rect.height) {
+            return null;
+        }
+
+        const contentX =
+            rect.left -
+            contentElement.getBoundingClientRect().left +
+            contentElement.scrollLeft;
+        return Math.floor(contentX / contentElement.clientWidth);
     }
 
     function recalculatePages(resetToStart) {
@@ -670,9 +710,43 @@
             1,
             Math.ceil(contentElement.scrollWidth / contentElement.clientWidth)
         );
-        pageIndex = Math.min(resetToStart ? 0 : pageIndex, pageCount - 1);
-        contentElement.scrollLeft = pageIndex * contentElement.clientWidth;
+        if (resetToStart) {
+            pageIndex = 0;
+        } else {
+            // After a reflow (resize, image load, note toggle, ads) keep showing
+            // the content the reader was on rather than the same page number.
+            const restoredPage = findPageForPosition(lastReaderPosition);
+            if (restoredPage !== null) {
+                pageIndex = restoredPage;
+            }
+        }
+        pageIndex = Math.max(0, Math.min(pageIndex, pageCount - 1));
+
+        const targetLeft = pageIndex * contentElement.clientWidth;
+        // Only snap if we are off a page boundary; unconditionally assigning
+        // scrollLeft here would cancel in-flight smooth page turns whenever
+        // unrelated DOM mutations (ads, comments) trigger a refresh.
+        if (Math.abs(contentElement.scrollLeft - targetLeft) > 1) {
+            contentElement.scrollLeft = targetLeft;
+        }
+        if (resetToStart || lastReaderPosition === null) {
+            lastReaderPosition = captureReaderPosition();
+        }
         updateControls();
+    }
+
+    function watchContentImages() {
+        if (!contentElement) {
+            return;
+        }
+
+        for (const image of contentElement.querySelectorAll("img")) {
+            if (!image.complete) {
+                image.addEventListener("load", () => recalculatePages(false), {
+                    once: true
+                });
+            }
+        }
     }
 
     function createControls() {
@@ -755,13 +829,15 @@
             if (!contentElement || contentElement.clientWidth === 0) {
                 return;
             }
-            pageIndex = Math.max(
-                0,
-                Math.min(
-                    pageCount - 1,
-                    Math.round(contentElement.scrollLeft / contentElement.clientWidth)
-                )
-            );
+
+            const width = contentElement.clientWidth;
+            const nearestPage = Math.round(contentElement.scrollLeft / width);
+            // Ignore intermediate positions of a smooth scroll; otherwise a
+            // second tap mid-animation would re-target the page we just left.
+            if (Math.abs(contentElement.scrollLeft - nearestPage * width) > 1) {
+                return;
+            }
+            pageIndex = Math.max(0, Math.min(pageCount - 1, nearestPage));
             updateControls();
         });
     }
@@ -902,12 +978,13 @@
         const contentLeft = contentElement.getBoundingClientRect().left;
         const scrollLeft = contentElement.scrollLeft;
         const pageStart = pageIndex * contentElement.clientWidth - 1;
+        const toContentX = (clientX) => clientX - contentLeft + scrollLeft;
         const isOnOrAfterPage = (rects) => {
             for (const rect of rects) {
                 if (
                     rect.width > 0 &&
                     rect.height > 0 &&
-                    rect.left - contentLeft + scrollLeft >= pageStart
+                    toContentX(rect.left) >= pageStart
                 ) {
                     return true;
                 }
@@ -920,7 +997,7 @@
             NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
             {
                 acceptNode(node) {
-                    if (titleElement && titleElement.contains(node)) {
+                    if (node === titleElement) {
                         return NodeFilter.FILTER_REJECT;
                     }
                     if (node.nodeType === Node.TEXT_NODE) {
@@ -928,9 +1005,20 @@
                             ? NodeFilter.FILTER_ACCEPT
                             : NodeFilter.FILTER_SKIP;
                     }
-                    return ATOMIC_ELEMENT_PATTERN.test(node.nodeName)
-                        ? NodeFilter.FILTER_ACCEPT
-                        : NodeFilter.FILTER_SKIP;
+                    if (ATOMIC_ELEMENT_PATTERN.test(node.nodeName)) {
+                        return NodeFilter.FILTER_ACCEPT;
+                    }
+                    // Cheap pre-filter: a block whose bounding box (the union
+                    // of all its column fragments) ends before this page
+                    // cannot contain anything on it, so skip its subtree.
+                    const bounds = node.getBoundingClientRect();
+                    if (
+                        (bounds.width > 0 || bounds.height > 0) &&
+                        toContentX(bounds.right) < pageStart
+                    ) {
+                        return NodeFilter.FILTER_REJECT;
+                    }
+                    return NodeFilter.FILTER_SKIP;
                 }
             }
         );
@@ -947,12 +1035,12 @@
 
             // This text node straddles the page boundary: binary-search the first
             // character whose line is on the current page.
+            const range = document.createRange();
+            range.setStart(node, 0);
             let low = 1;
             let high = node.data.length;
             while (low < high) {
                 const middle = (low + high) >>> 1;
-                const range = document.createRange();
-                range.setStart(node, 0);
                 range.setEnd(node, middle);
                 if (isOnOrAfterPage(range.getClientRects())) {
                     high = middle;
@@ -1072,7 +1160,13 @@
                     ? getDocumentTop(section, 0)
                     : document.documentElement.scrollHeight;
             });
-        } else if (position) {
+        } else {
+            scrollToReaderPosition(position);
+        }
+    }
+
+    function scrollToReaderPosition(position) {
+        if (position) {
             scrollDocumentTo(() => getDocumentTop(position.node, position.offset));
         }
     }
@@ -1095,18 +1189,24 @@
         addAuthorNotes();
         createTouchTargets();
         createControls();
+        watchContentImages();
         contentElement.addEventListener("scroll", handleScroll, { passive: true });
-        contentElement.addEventListener("touchstart", handleTouchStart, {
-            passive: true
-        });
-        contentElement.addEventListener("touchend", handleTouchEnd, {
-            passive: false
-        });
-        contentElement.addEventListener("touchcancel", handleTouchCancel, {
-            passive: true
-        });
+        // Swipes are also recognised on the edge touch targets, otherwise a
+        // vertical swipe starting near either edge would be swallowed.
+        for (const element of [contentElement, touchTargetsElement]) {
+            element.addEventListener("touchstart", handleTouchStart, {
+                passive: true
+            });
+            element.addEventListener("touchend", handleTouchEnd, {
+                passive: false
+            });
+            element.addEventListener("touchcancel", handleTouchCancel, {
+                passive: true
+            });
+        }
         document.addEventListener("keydown", handleKeydown);
         pageIndex = 0;
+        lastReaderPosition = null;
         window.requestAnimationFrame(() => recalculatePages(true));
     }
 
@@ -1155,8 +1255,12 @@
         }
 
         if (!isSupportedViewport()) {
+            // Folding the phone / rotating to portrait leaves the reader too:
+            // land on the content that was being read, not the page top.
+            const position = contentElement ? lastReaderPosition : null;
             readerSuspended = false;
             deactivate();
+            scrollToReaderPosition(position);
             return;
         }
 
@@ -1178,13 +1282,17 @@
     }
 
     function isCommentLink() {
-        return new URL(window.location.href).searchParams.has("comment");
+        // Royal Road links to comments with either ?comment=<id> or #comment-<id>.
+        return (
+            new URL(window.location.href).searchParams.has("comment") ||
+            /^#comment-/.test(window.location.hash)
+        );
     }
 
     window.addEventListener("resize", () => {
         window.clearTimeout(resizeTimer);
         resizeTimer = window.setTimeout(() => {
-            if (isSupportedViewport()) {
+            if (contentElement && isSupportedViewport()) {
                 recalculatePages(false);
             } else {
                 refresh();
