@@ -1596,6 +1596,65 @@
         );
     }
 
+    const FULLSCREEN_KEY = "rrf-foldable-fullscreen";
+
+    function setFullscreenPreference(enabled) {
+        try {
+            if (enabled) {
+                sessionStorage.setItem(FULLSCREEN_KEY, "1");
+            } else {
+                sessionStorage.removeItem(FULLSCREEN_KEY);
+            }
+        } catch (error) {
+            // Storage may be unavailable; fullscreen then simply isn't restored.
+        }
+    }
+
+    function wantsFullscreen() {
+        try {
+            return sessionStorage.getItem(FULLSCREEN_KEY) === "1";
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function requestFullscreen() {
+        const root = document.documentElement;
+        if (!document.fullscreenElement && root.requestFullscreen) {
+            return root.requestFullscreen().catch(() => {});
+        }
+        return undefined;
+    }
+
+    // Royal Road provides its own double-click fullscreen toggle; we only
+    // track it. Browsers leave fullscreen on navigation (e.g. to the next
+    // chapter) and only allow re-entering it from a user gesture, so remember
+    // the state and restore it on the first tap of the next page.
+    let pageUnloading = false;
+    window.addEventListener("pagehide", () => {
+        pageUnloading = true;
+    });
+    document.addEventListener("fullscreenchange", () => {
+        if (document.fullscreenElement) {
+            // Double-clicking selects a word; drop it when entering fullscreen.
+            window.getSelection()?.removeAllRanges();
+            setFullscreenPreference(true);
+        } else if (!pageUnloading) {
+            setFullscreenPreference(false);
+        }
+    });
+    if (wantsFullscreen() && !document.fullscreenElement) {
+        const restore = () => {
+            document.removeEventListener("pointerup", restore, true);
+            document.removeEventListener("click", restore, true);
+            if (wantsFullscreen()) {
+                requestFullscreen();
+            }
+        };
+        document.addEventListener("pointerup", restore, true);
+        document.addEventListener("click", restore, true);
+    }
+
     window.addEventListener("resize", () => {
         window.clearTimeout(resizeTimer);
         resizeTimer = window.setTimeout(() => {
