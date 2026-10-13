@@ -583,14 +583,6 @@
 
             .${ACTIVE_CONTENT_CLASS} {
                 background: var(--rrf-page-background) !important;
-                background-image: linear-gradient(
-                    to bottom,
-                    rgba(128, 128, 128, 0.35),
-                    rgba(128, 128, 128, 0.35)
-                ) !important;
-                background-position: center 3.75rem;
-                background-repeat: no-repeat;
-                background-size: 1px calc(100% - 8.25rem);
                 box-sizing: border-box !important;
                 color: var(--rrf-page-foreground) !important;
                 height: 100dvh !important;
@@ -612,6 +604,17 @@
                 touch-action: none !important;
                 width: 100vw !important;
                 z-index: 2147483645 !important;
+            }
+
+            .${ACTIVE_CONTENT_CLASS}::after {
+                background: rgba(128, 128, 128, 0.35);
+                bottom: 4.5rem;
+                content: "";
+                left: 50%;
+                pointer-events: none;
+                position: absolute;
+                top: 3.75rem;
+                width: 1px;
             }
 
             .${ACTIVE_CONTENT_CLASS}::-webkit-scrollbar {
