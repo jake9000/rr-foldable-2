@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Royal Road Foldable Chapter UI
 // @namespace    https://github.com/royal-road-foldable-ui
-// @version      1.0.1
+// @version      1.0.2
 // @description  Displays Royal Road chapters as two-column, page-flippable spreads on foldable phones in landscape mode.
 // @match        https://www.royalroad.com/fiction/*/chapter/*
 // @match        https://royalroad.com/fiction/*/chapter/*
@@ -277,71 +277,76 @@
     }
 
     function findNextChapterWidget(content) {
-        const candidates = document.querySelectorAll(
-            "div[class*='bg-info'], div.alert-info, div.alert, [class*='next-chapter'], div"
-        );
+        // Look directly for Royal Road's schedule banner (redesign or legacy alert).
+        // Must be the banner itself, not a containing card or navigation portlet.
+        const selectors = [
+            "[class*='bg-info']",
+            ".alert-info",
+            "[class*='alert-info']",
+            "[class*='next-chapter']"
+        ];
+        for (const selector of selectors) {
+            for (const el of document.querySelectorAll(selector)) {
+                if (!(el instanceof HTMLElement)) {
+                    continue;
+                }
+                if (
+                    el === document.body ||
+                    el === content ||
+                    el.id === CONTROLS_ID ||
+                    el.id === TOUCH_TARGETS_ID ||
+                    el.classList.contains(NEXT_CHAPTER_CLASS) ||
+                    el.classList.contains(AUTHOR_NOTE_CLASS) ||
+                    (content && content.contains(el))
+                ) {
+                    continue;
+                }
 
-        for (const candidate of candidates) {
-            if (!(candidate instanceof HTMLElement)) {
-                continue;
-            }
-            if (
-                candidate === document.body ||
-                candidate === content ||
-                candidate.id === CONTROLS_ID ||
-                candidate.id === TOUCH_TARGETS_ID ||
-                candidate.classList.contains(NEXT_CHAPTER_CLASS) ||
-                candidate.classList.contains(AUTHOR_NOTE_CLASS) ||
-                candidate.closest(".author-note, .portlet-body") ||
-                (content && content.contains(candidate))
-            ) {
-                continue;
-            }
-
-            const text = candidate.textContent || "";
-            if (!/next\s+chapter\s*:/i.test(text)) {
-                continue;
-            }
-
-            const hasTime = Boolean(candidate.querySelector("time"));
-            const hasClock = Boolean(
-                candidate.querySelector(".fa-clock, [class*='fa-clock'], [class*='clock']")
-            );
-            if (!hasTime && !hasClock) {
-                continue;
-            }
-
-            if (
-                candidate.querySelectorAll("p, .chapter-content, #comments, [data-comment-id]").length > 0 ||
-                text.length > 500
-            ) {
-                continue;
-            }
-
-            if (
-                candidate.matches("[class*='bg-info'], .alert-info, .alert") ||
-                (hasClock && hasTime)
-            ) {
-                return candidate;
+                const text = el.textContent || "";
+                if (
+                    /next\s+chapter\s*:/i.test(text) &&
+                    el.querySelector("time") &&
+                    !el.querySelector(
+                        "a[href*='/chapter/'], select, button, .btn, #comments, [data-comment-id]"
+                    )
+                ) {
+                    return el;
+                }
             }
         }
 
+        // Fallback: search upward from any <time> element that mentions "Next Chapter:".
+        // Stop before outer container cards, navigation rows, or comment sections.
         for (const timeEl of document.querySelectorAll("time")) {
             if (content && content.contains(timeEl)) {
                 continue;
             }
-            let parent = timeEl.parentElement;
-            while (parent && parent !== document.body && parent !== content) {
-                const text = parent.textContent || "";
+            let current = timeEl.parentElement;
+            let candidate = null;
+            while (current && current !== document.body && current !== content) {
+                const text = current.textContent || "";
                 if (/next\s+chapter\s*:/i.test(text)) {
                     if (
-                        parent.querySelectorAll("p, .chapter-content, #comments, [data-comment-id]").length === 0 &&
-                        text.length < 500
+                        current.querySelector(
+                            "a[href*='/chapter/'], select, button, .btn, #comments, [data-comment-id]"
+                        )
                     ) {
-                        return parent;
+                        break;
+                    }
+                    candidate = current;
+                    if (
+                        current.querySelector(
+                            ".fa-clock, [class*='fa-clock'], [class*='clock']"
+                        ) &&
+                        current.querySelector("time")
+                    ) {
+                        return current;
                     }
                 }
-                parent = parent.parentElement;
+                current = current.parentElement;
+            }
+            if (candidate) {
+                return candidate;
             }
         }
 
@@ -668,22 +673,15 @@
                     in srgb,
                     var(--rrf-page-foreground) 8%,
                     var(--rrf-page-background)
-                ) !important;
+                );
                 border: 1px solid
-                    color-mix(in srgb, var(--rrf-page-foreground) 20%, transparent) !important;
-                border-radius: 0.4rem !important;
+                    color-mix(in srgb, var(--rrf-page-foreground) 20%, transparent);
+                border-radius: 0.4rem;
                 break-inside: avoid !important;
                 box-sizing: border-box !important;
-                color: var(--rrf-page-foreground) !important;
-                display: flex !important;
-                align-items: center !important;
-                gap: 0.75rem !important;
-                line-height: 1.4 !important;
                 margin: 1.5rem 0 1rem !important;
                 max-width: 100% !important;
                 overflow: hidden !important;
-                padding: 0.75rem 1rem !important;
-                width: 100% !important;
             }
 
             .${NEXT_CHAPTER_CLASS} * {
@@ -694,13 +692,12 @@
             .${NEXT_CHAPTER_CLASS} [class*='text-info'],
             .${NEXT_CHAPTER_CLASS} i.fa-clock,
             .${NEXT_CHAPTER_CLASS} [class*='clock'] {
-                color: color-mix(in srgb, var(--rrf-page-foreground) 75%, #3b82f6) !important;
-                flex-shrink: 0 !important;
+                flex-shrink: 0;
             }
 
             .${NEXT_CHAPTER_CLASS} .flex-grow {
-                flex-grow: 1 !important;
-                min-width: 0 !important;
+                flex-grow: 1;
+                min-width: 0;
             }
 
             #${TOUCH_TARGETS_ID} {
