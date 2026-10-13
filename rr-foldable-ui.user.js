@@ -726,7 +726,7 @@
 
     function findCommentSection() {
         const knownContainer = document.querySelector(
-            "#comments, #comments-container, #chapter-comments, .comments-container, .chapter-comments, [data-comment-section]"
+            "#comments, #comments-container, #chapter-comments, .comments-container, .chapter-comments, [data-comment-section], #comment-loader"
         );
         if (knownContainer) {
             return knownContainer;
@@ -738,37 +738,14 @@
         return heading?.closest("section, .portlet, .panel, div") || heading || null;
     }
 
-    function leaveReader(direction) {
-        if (!contentElement) {
-            return;
-        }
-
-        const commentSection =
-            direction === "next" && pageIndex === pageCount - 1
-                ? findCommentSection()
-                : null;
-        let adjacentElement =
-            direction === "next"
-                ? contentElement.nextElementSibling
-                : contentElement.previousElementSibling;
-        if (!adjacentElement && contentElement.parentElement) {
-            adjacentElement =
-                direction === "next"
-                    ? contentElement.parentElement.nextElementSibling
-                    : contentElement.parentElement.previousElementSibling;
-        }
-
-        readerSuspended = true;
-        deactivate();
-
-        const exitTarget = commentSection || adjacentElement;
+    function scrollToDocumentTarget(target, direction) {
         window.requestAnimationFrame(() => {
             window.requestAnimationFrame(() => {
-                if (exitTarget instanceof HTMLElement && document.contains(exitTarget)) {
+                if (target instanceof HTMLElement && document.contains(target)) {
                     window.scrollTo({
                         top: Math.max(
                             0,
-                            exitTarget.getBoundingClientRect().top +
+                            target.getBoundingClientRect().top +
                                 window.scrollY -
                                 12
                         ),
@@ -784,6 +761,67 @@
                 }
             });
         });
+    }
+
+    function waitForCommentsAndScroll(loader, direction) {
+        let finished = false;
+        let observer = null;
+        const finish = () => {
+            if (finished) {
+                return;
+            }
+            finished = true;
+            observer?.disconnect();
+            scrollToDocumentTarget(
+                document.querySelector("[data-comment-id]") ||
+                    findCommentSection() ||
+                    loader,
+                direction
+            );
+        };
+
+        observer = new MutationObserver(() => {
+            if (document.querySelector("[data-comment-id]")) {
+                finish();
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+        window.setTimeout(finish, 4000);
+    }
+
+    function leaveReader(direction) {
+        if (!contentElement) {
+            return;
+        }
+
+        const commentSection =
+            direction === "next" && pageIndex === pageCount - 1
+                ? findCommentSection()
+                : null;
+        const commentLoader =
+            direction === "next" && pageIndex === pageCount - 1
+                ? document.querySelector("#comment-loader")
+                : null;
+        let adjacentElement =
+            direction === "next"
+                ? contentElement.nextElementSibling
+                : contentElement.previousElementSibling;
+        if (!adjacentElement && contentElement.parentElement) {
+            adjacentElement =
+                direction === "next"
+                    ? contentElement.parentElement.nextElementSibling
+                    : contentElement.parentElement.previousElementSibling;
+        }
+
+        readerSuspended = true;
+        deactivate();
+
+        if (commentLoader instanceof HTMLElement) {
+            commentLoader.click();
+            waitForCommentsAndScroll(commentLoader, direction);
+        } else {
+            scrollToDocumentTarget(commentSection || adjacentElement, direction);
+        }
     }
 
     function activate(content) {
