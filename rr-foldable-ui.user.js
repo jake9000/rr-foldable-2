@@ -19,6 +19,7 @@
     const TITLE_CLASS = "rrf-foldable-title";
     const AUTHOR_NOTE_CLASS = "rrf-foldable-author-note";
     const HIDDEN_HEADER_CLASS = "rrf-foldable-hidden-header";
+    const TOUCH_TARGETS_ID = "rrf-foldable-touch-targets";
     const MOBILE_LANDSCAPE_QUERY =
         "(orientation: landscape) and (min-width: 600px) and (max-width: 1000px)";
 
@@ -27,6 +28,7 @@
     let titleElement = null;
     let authorNoteElements = [];
     let siteHeaderElement = null;
+    let touchTargetsElement = null;
     let readerColors = null;
     let originalReaderColorProperties = null;
     let pageIndex = 0;
@@ -407,7 +409,7 @@
                 scrollbar-width: none !important;
                 touch-action: none !important;
                 width: 100vw !important;
-                z-index: 2147483646 !important;
+                z-index: 2147483645 !important;
             }
 
             .${ACTIVE_CONTENT_CLASS}::-webkit-scrollbar {
@@ -470,6 +472,33 @@
             .${AUTHOR_NOTE_CLASS} * {
                 box-sizing: border-box;
                 max-width: 100%;
+            }
+
+            #${TOUCH_TARGETS_ID} {
+                bottom: 4rem;
+                display: flex;
+                left: 0;
+                pointer-events: none;
+                position: fixed;
+                right: 0;
+                top: 3.75rem;
+                z-index: 2147483646;
+            }
+
+            #${TOUCH_TARGETS_ID} button {
+                background: transparent;
+                border: 0;
+                flex: 0 0 14%;
+                margin: 0;
+                opacity: 0;
+                padding: 0;
+                pointer-events: auto;
+                touch-action: none;
+            }
+
+            #${TOUCH_TARGETS_ID} .rrf-foldable-touch-spacer {
+                flex: 1 1 auto;
+                pointer-events: none;
             }
 
             #${CONTROLS_ID} {
@@ -552,6 +581,29 @@
         if (nextButton instanceof HTMLButtonElement) {
             nextButton.disabled = pageIndex >= pageCount - 1;
         }
+    }
+
+    function createTouchTargets() {
+        const targets = document.createElement("div");
+        targets.id = TOUCH_TARGETS_ID;
+        targets.setAttribute("aria-label", "Page turn touch targets");
+        targets.innerHTML = `
+            <button type="button" data-direction="previous" aria-label="Previous page"></button>
+            <span class="rrf-foldable-touch-spacer" aria-hidden="true"></span>
+            <button type="button" data-direction="next" aria-label="Next page"></button>
+        `;
+        targets.addEventListener("click", (event) => {
+            const button =
+                event.target instanceof Element
+                    ? event.target.closest("button[data-direction]")
+                    : null;
+            if (!button) {
+                return;
+            }
+            goToPage(pageIndex + (button.dataset.direction === "next" ? 1 : -1));
+        });
+        document.body.appendChild(targets);
+        touchTargetsElement = targets;
     }
 
     function goToPage(nextIndex, behavior = "smooth") {
@@ -839,6 +891,7 @@
         hideSiteHeader();
         addChapterTitle();
         addAuthorNotes();
+        createTouchTargets();
         createControls();
         contentElement.addEventListener("scroll", handleScroll, { passive: true });
         contentElement.addEventListener("touchstart", handleTouchStart, {
@@ -866,6 +919,9 @@
         if (controlsElement) {
             controlsElement.remove();
         }
+        if (touchTargetsElement) {
+            touchTargetsElement.remove();
+        }
         if (titleElement) {
             titleElement.remove();
         }
@@ -878,6 +934,7 @@
         removeReaderColors();
         contentElement = null;
         controlsElement = null;
+        touchTargetsElement = null;
         titleElement = null;
         authorNoteElements = [];
         siteHeaderElement = null;
