@@ -583,14 +583,6 @@
 
             .${ACTIVE_CONTENT_CLASS} {
                 background: var(--rrf-page-background) !important;
-                background-image: linear-gradient(
-                    to bottom,
-                    rgba(128, 128, 128, 0.35),
-                    rgba(128, 128, 128, 0.35)
-                ) !important;
-                background-position: center 3.75rem;
-                background-repeat: no-repeat;
-                background-size: 1px calc(100% - 8.25rem);
                 box-sizing: border-box !important;
                 color: var(--rrf-page-foreground) !important;
                 height: 100dvh !important;
@@ -605,7 +597,7 @@
                 column-count: 2 !important;
                 column-fill: auto !important;
                 column-gap: 2rem !important;
-                column-rule: none !important;
+                column-rule: 1px solid rgba(128, 128, 128, 0.35) !important;
                 scroll-behavior: auto !important;
                 scroll-snap-type: none !important;
                 scrollbar-width: none !important;
