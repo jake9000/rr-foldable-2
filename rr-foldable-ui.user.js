@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Royal Road Foldable Chapter UI
 // @namespace    https://github.com/royal-road-foldable-ui
-// @version      1.0.4
+// @version      1.0.5
 // @description  Displays Royal Road chapters as two-column, page-flippable spreads on foldable phones in landscape mode.
 // @match        https://www.royalroad.com/fiction/*/chapter/*
 // @match        https://royalroad.com/fiction/*/chapter/*
@@ -93,10 +93,17 @@
                 ? /\bnext(?:\s+chapter)?\b/i
                 : /\b(previous|prev)(?:\s+chapter)?\b/i;
 
+        const currentUrl = new URL(window.location.href);
         const chapterLinks = [];
         for (const element of document.querySelectorAll(
             "[href*='/chapter/'], [data-href*='/chapter/'], [data-url*='/chapter/']"
         )) {
+            if (
+                (controlsElement && controlsElement.contains(element)) ||
+                (contentElement && contentElement.contains(element))
+            ) {
+                continue;
+            }
             const target =
                 element.getAttribute("href") ||
                 element.getAttribute("data-href") ||
@@ -105,7 +112,11 @@
                 continue;
             }
 
-            const href = new URL(target, window.location.origin).href;
+            const resolved = new URL(target, window.location.origin);
+            if (resolved.pathname === currentUrl.pathname) {
+                continue;
+            }
+            const href = resolved.href;
             const label = [
                 element.textContent,
                 element.getAttribute("aria-label"),
@@ -1454,6 +1465,9 @@
         ) {
             return sampled;
         }
+        if (window.scrollY <= 1) {
+            return null;
+        }
         return captureDocumentPosition(content);
     }
 
@@ -1746,6 +1760,20 @@
     }
 
     const FULLSCREEN_KEY = "rrf-foldable-fullscreen";
+    const FULLSCREEN_TAP_INTERVAL = 500;
+    const ROYAL_ROAD_DOUBLE_TAP_WINDOW = 650;
+    const FULLSCREEN_TAP_DISTANCE = 48;
+    const CHAPTER_STYLE_ATTR = "data-rrf-chapter-style";
+    const READER_PREFERENCE_CLASS_PATTERN =
+        /^(?:font-size-|width-|font-family-|reset-fonts$|indent-|strip-colors$|paragraph-spacing-)/;
+
+    let pageUnloading = false;
+    let lastChapterClickTime = 0;
+    let lastFullscreenTapTime = 0;
+    let lastFullscreenTapX = 0;
+    let lastFullscreenTapY = 0;
+    let activeChapterNavigation = null;
+    let currentChapterPath = window.location.pathname;
 
     function setFullscreenPreference(enabled) {
         try {
@@ -1767,42 +1795,465 @@
         }
     }
 
-    function requestFullscreen() {
-        const root = document.documentElement;
-        if (!document.fullscreenElement && root.requestFullscreen) {
-            return root.requestFullscreen().catch(() => {});
-        }
-        return undefined;
+    function getFullscreenElement() {
+        return (
+            document.fullscreenElement ||
+            document.webkitFullscreenElement ||
+            null
+        );
     }
 
-    // Royal Road provides its own double-click fullscreen toggle; we only
-    // track it. Browsers leave fullscreen on navigation (e.g. to the next
-    // chapter) and only allow re-entering it from a user gesture, so remember
-    // the state and restore it on the first tap of the next page.
-    let pageUnloading = false;
+    function requestFullscreen() {
+        const root = document.documentElement;
+        if (getFullscreenElement()) {
+            return Promise.resolve();
+        }
+        if (typeof root.requestFullscreen === "function") {
+            return root
+                .requestFullscreen({ navigationUI: "hide" })
+                .catch(() => root.requestFullscreen())
+                .then(
+                    () => {
+                        setFullscreenPreference(true);
+                    },
+                    () => {
+                        if (!getFullscreenElement()) {
+                            setFullscreenPreference(false);
+                        }
+                    }
+                );
+        }
+        if (typeof root.webkitRequestFullscreen === "function") {
+            try {
+                root.webkitRequestFullscreen();
+            } catch (error) {
+                setFullscreenPreference(false);
+            }
+        }
+        return Promise.resolve();
+    }
+
+    function exitFullscreen() {
+        if (!getFullscreenElement()) {
+            return Promise.resolve();
+        }
+        if (typeof document.exitFullscreen === "function") {
+            return document.exitFullscreen().catch(() => {});
+        }
+        if (typeof document.webkitExitFullscreen === "function") {
+            try {
+                document.webkitExitFullscreen();
+            } catch (error) {}
+        }
+        return Promise.resolve();
+    }
+
+    function toggleFullscreen() {
+        if (getFullscreenElement()) {
+            setFullscreenPreference(false);
+            exitFullscreen();
+        } else {
+            setFullscreenPreference(true);
+            requestFullscreen();
+        }
+    }
+
+    function isInteractiveReaderTarget(target) {
+        return (
+            target instanceof Element &&
+            Boolean(
+                target.closest(
+                    "a, button, summary, input, select, textarea, label, [role='button']"
+                )
+            )
+        );
+    }
+
+    function isSameFictionChapterUrl(href) {
+        try {
+            const target = new URL(href, window.location.origin);
+            if (target.origin !== window.location.origin) {
+                return false;
+            }
+            if (
+                target.searchParams.has("comment") ||
+                /^#comment-/.test(target.hash)
+            ) {
+                return false;
+            }
+            if (
+                target.pathname === window.location.pathname &&
+                target.hash
+            ) {
+                return false;
+            }
+            const currentFictionId = window.location.pathname.match(
+                /^\/fiction\/(\d+)\//
+            )?.[1];
+            const targetMatch = target.pathname.match(
+                /^\/fiction\/(\d+)\/[^/]+\/chapter\/\d+/
+            );
+            if (!targetMatch) {
+                return false;
+            }
+            return !currentFictionId || targetMatch[1] === currentFictionId;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function syncFetchedHead(nextDoc) {
+        if (nextDoc.title) {
+            document.title = nextDoc.title;
+        }
+
+        for (const link of document.head.querySelectorAll(
+            "link[rel='next'], link[rel='prev'], link[rel='canonical']"
+        )) {
+            link.remove();
+        }
+        for (const link of nextDoc.head.querySelectorAll(
+            "link[rel='next'], link[rel='prev'], link[rel='canonical']"
+        )) {
+            document.head.appendChild(document.importNode(link, true));
+        }
+
+        for (const style of document.head.querySelectorAll(
+            `style[${CHAPTER_STYLE_ATTR}]`
+        )) {
+            style.remove();
+        }
+        for (const style of nextDoc.head.querySelectorAll("style")) {
+            if (style.id === STYLE_ID) {
+                continue;
+            }
+            const clone = document.importNode(style, true);
+            clone.setAttribute(CHAPTER_STYLE_ATTR, "true");
+            document.head.appendChild(clone);
+        }
+    }
+
+    function setupFetchedChapterEnhancements() {
+        const chapterIdMatch = window.location.pathname.match(/\/chapter\/(\d+)/);
+        if (chapterIdMatch) {
+            const parsedId = Number(chapterIdMatch[1]);
+            if (Number.isFinite(parsedId)) {
+                window.chapterId = parsedId;
+            }
+        }
+
+        for (const paragraph of document.querySelectorAll(".chapter-content p")) {
+            if (
+                paragraph.style.marginBottom &&
+                ["0.001pt", "1em"].includes(paragraph.style.marginBottom)
+            ) {
+                paragraph.style.marginBottom = "";
+            }
+        }
+
+        try {
+            window.royalroad?.convertTime?.();
+            window.royalroad?.spoilers?.loadSpoilers?.();
+        } catch (error) {}
+
+        const commentLoader = document.getElementById("comment-loader");
+        if (
+            commentLoader &&
+            typeof window.loadComments === "function" &&
+            window.chapterId
+        ) {
+            const targetChapterId = window.chapterId;
+            new IntersectionObserver(
+                (entries, observer) => {
+                    for (const entry of entries) {
+                        if (entry.isIntersecting) {
+                            window.loadComments(1, targetChapterId, null, true);
+                            observer.unobserve(entry.target);
+                        }
+                    }
+                },
+                { rootMargin: "0px 0px 50px 0px", threshold: 0 }
+            ).observe(commentLoader);
+        }
+    }
+
+    function applyFetchedChapterDocument(nextDoc, finalUrl, pushState) {
+        const currentChapterEl = document.querySelector(".chapter");
+        const preservedChapterClasses = currentChapterEl
+            ? [...currentChapterEl.classList].filter((className) =>
+                  READER_PREFERENCE_CLASS_PATTERN.test(className)
+              )
+            : [];
+
+        cancelPendingDocumentScroll?.();
+        window.clearTimeout(refreshTimer);
+        window.clearTimeout(documentScrollTimer);
+        if (navigationFrame !== null) {
+            window.cancelAnimationFrame(navigationFrame);
+            navigationFrame = null;
+        }
+
+        deactivate();
+        syncFetchedHead(nextDoc);
+
+        if (pushState && finalUrl !== window.location.href) {
+            history.pushState(null, "", finalUrl);
+        }
+        currentChapterPath = window.location.pathname;
+
+        const currentContainer =
+            document.querySelector(".container.chapter-page") ||
+            document.querySelector("main");
+        const nextContainer =
+            nextDoc.querySelector(".container.chapter-page") ||
+            nextDoc.querySelector("main");
+
+        if (
+            currentContainer &&
+            nextContainer &&
+            currentContainer.tagName === nextContainer.tagName
+        ) {
+            currentContainer.replaceWith(document.adoptNode(nextContainer));
+        } else {
+            for (const script of nextDoc.body.querySelectorAll("script")) {
+                script.remove();
+            }
+            document.body.replaceChildren(
+                ...[...nextDoc.body.childNodes].map((node) =>
+                    document.adoptNode(node)
+                )
+            );
+        }
+
+        const updatedChapterEl = document.querySelector(".chapter");
+        if (updatedChapterEl && preservedChapterClasses.length > 0) {
+            updatedChapterEl.classList.add(...preservedChapterClasses);
+        }
+
+        setupFetchedChapterEnhancements();
+
+        readerSuspended = false;
+        lastReaderPosition = null;
+        documentPositionSample = null;
+        touchStartX = null;
+        touchStartY = null;
+        pageIndex = 0;
+        window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+        refresh();
+    }
+
+    async function navigateToChapter(targetUrl, { pushState = true } = {}) {
+        if (activeChapterNavigation) {
+            activeChapterNavigation.abort();
+        }
+        const controller = new AbortController();
+        activeChapterNavigation = controller;
+
+        if (controlsElement) {
+            for (const link of controlsElement.querySelectorAll("a")) {
+                link.style.pointerEvents = "none";
+                link.style.opacity = "0.5";
+            }
+        }
+
+        try {
+            const response = await fetch(targetUrl, {
+                credentials: "same-origin",
+                signal: controller.signal
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const html = await response.text();
+            if (controller.signal.aborted) {
+                return;
+            }
+
+            const nextDoc = new DOMParser().parseFromString(html, "text/html");
+            const nextContent =
+                nextDoc.querySelector(".chapter-content") ||
+                nextDoc.querySelector(".chapter-inner");
+            if (
+                !(nextContent instanceof HTMLElement) ||
+                !nextContent.textContent.trim()
+            ) {
+                throw new Error("No chapter content in response");
+            }
+
+            const finalUrl = response.url || targetUrl;
+            applyFetchedChapterDocument(nextDoc, finalUrl, pushState);
+        } catch (error) {
+            if (controller.signal.aborted) {
+                return;
+            }
+            pageUnloading = true;
+            window.location.href = targetUrl;
+        } finally {
+            if (activeChapterNavigation === controller) {
+                activeChapterNavigation = null;
+            }
+        }
+    }
+
+    function handleDocumentClickCapture(event) {
+        if (
+            !event.defaultPrevented &&
+            event.button === 0 &&
+            !event.ctrlKey &&
+            !event.metaKey &&
+            !event.shiftKey &&
+            !event.altKey
+        ) {
+            const link =
+                event.target instanceof Element
+                    ? event.target.closest("a[href]")
+                    : null;
+            if (
+                link instanceof HTMLAnchorElement &&
+                link.target !== "_blank" &&
+                (contentElement !== null ||
+                    getFullscreenElement() !== null ||
+                    wantsFullscreen()) &&
+                ((controlsElement && controlsElement.contains(link)) ||
+                    (!link.hasAttribute("data-subscriber-nav") &&
+                        isSameFictionChapterUrl(link.href)))
+            ) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (wantsFullscreen() && !getFullscreenElement()) {
+                    requestFullscreen();
+                }
+                navigateToChapter(link.href, { pushState: true });
+                return;
+            }
+        }
+
+        const chapterRoot =
+            contentElement &&
+            event.target instanceof Node &&
+            contentElement.contains(event.target)
+                ? contentElement
+                : event.target instanceof Element
+                  ? event.target.closest(".chapter-content, .chapter-inner")
+                  : null;
+
+        if (wantsFullscreen() && !getFullscreenElement()) {
+            lastFullscreenTapTime = 0;
+            requestFullscreen();
+            if (chapterRoot) {
+                lastChapterClickTime = Date.now();
+                if (
+                    isInteractiveReaderTarget(event.target) &&
+                    event.target instanceof Element
+                ) {
+                    event.target.addEventListener(
+                        "click",
+                        (bubbleEvent) => bubbleEvent.stopPropagation(),
+                        { once: true }
+                    );
+                } else {
+                    event.stopPropagation();
+                    event.stopImmediatePropagation();
+                }
+            }
+            return;
+        }
+
+        if (!chapterRoot) {
+            return;
+        }
+
+        const now = Date.now();
+        const sinceLastChapterClick = now - lastChapterClickTime;
+        lastChapterClickTime = now;
+
+        if (isInteractiveReaderTarget(event.target)) {
+            lastFullscreenTapTime = 0;
+            if (
+                sinceLastChapterClick > 0 &&
+                sinceLastChapterClick < ROYAL_ROAD_DOUBLE_TAP_WINDOW &&
+                event.target instanceof Element
+            ) {
+                event.target.addEventListener(
+                    "click",
+                    (bubbleEvent) => bubbleEvent.stopPropagation(),
+                    { once: true }
+                );
+            }
+            return;
+        }
+
+        // Swallow rapid second clicks in the capture phase so Royal Road's own
+        // bubbling .chapter-content click listener never triggers its toastr
+        // popup or fights with our fullscreen state.
+        if (
+            sinceLastChapterClick > 0 &&
+            sinceLastChapterClick < ROYAL_ROAD_DOUBLE_TAP_WINDOW
+        ) {
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+        }
+
+        const sinceLastTap = now - lastFullscreenTapTime;
+        const withinDistance =
+            Math.hypot(
+                event.clientX - lastFullscreenTapX,
+                event.clientY - lastFullscreenTapY
+            ) <= FULLSCREEN_TAP_DISTANCE;
+
+        if (
+            sinceLastTap > 0 &&
+            sinceLastTap < FULLSCREEN_TAP_INTERVAL &&
+            withinDistance
+        ) {
+            lastFullscreenTapTime = 0;
+            window.getSelection()?.removeAllRanges();
+            toggleFullscreen();
+            return;
+        }
+
+        lastFullscreenTapTime = now;
+        lastFullscreenTapX = event.clientX;
+        lastFullscreenTapY = event.clientY;
+    }
+
+    window.addEventListener("beforeunload", () => {
+        pageUnloading = true;
+    });
     window.addEventListener("pagehide", () => {
         pageUnloading = true;
     });
+    window.addEventListener("pageshow", () => {
+        pageUnloading = false;
+    });
     document.addEventListener("fullscreenchange", () => {
-        if (document.fullscreenElement) {
+        if (getFullscreenElement()) {
             // Double-clicking selects a word; drop it when entering fullscreen.
             window.getSelection()?.removeAllRanges();
             setFullscreenPreference(true);
-        } else if (!pageUnloading) {
+        } else if (!pageUnloading && document.visibilityState === "visible") {
             setFullscreenPreference(false);
         }
+        if (contentElement && isSupportedViewport()) {
+            window.requestAnimationFrame(() => recalculatePages(false));
+        }
     });
-    if (wantsFullscreen() && !document.fullscreenElement) {
-        const restore = () => {
-            document.removeEventListener("pointerup", restore, true);
-            document.removeEventListener("click", restore, true);
-            if (wantsFullscreen()) {
-                requestFullscreen();
+    document.addEventListener("click", handleDocumentClickCapture, true);
+    document.addEventListener(
+        "dblclick",
+        (event) => {
+            if (
+                contentElement &&
+                event.target instanceof Node &&
+                contentElement.contains(event.target) &&
+                !isInteractiveReaderTarget(event.target)
+            ) {
+                window.getSelection()?.removeAllRanges();
             }
-        };
-        document.addEventListener("pointerup", restore, true);
-        document.addEventListener("click", restore, true);
-    }
+        },
+        true
+    );
 
     window.addEventListener("resize", () => {
         window.clearTimeout(resizeTimer);
@@ -1829,7 +2280,16 @@
         { passive: true }
     );
     window.addEventListener("orientationchange", scheduleRefresh);
-    window.addEventListener("popstate", scheduleRefresh);
+    window.addEventListener("popstate", () => {
+        if (
+            window.location.pathname !== currentChapterPath &&
+            /^\/fiction\/.*\/chapter\/\d+/.test(window.location.pathname)
+        ) {
+            navigateToChapter(window.location.href, { pushState: false });
+            return;
+        }
+        scheduleRefresh();
+    });
     document.addEventListener("DOMContentLoaded", refresh, { once: true });
     new MutationObserver((mutations) => {
         if (
