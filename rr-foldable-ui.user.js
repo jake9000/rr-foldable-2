@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Royal Road Foldable Chapter UI
 // @namespace    https://github.com/royal-road-foldable-ui
-// @version      1.0.6
+// @version      1.0.7
 // @description  Displays Royal Road chapters as two-column, page-flippable spreads on foldable phones in landscape mode.
 // @match        https://www.royalroad.com/fiction/*/chapter/*
 // @match        https://royalroad.com/fiction/*/chapter/*
@@ -620,7 +620,7 @@
                 column-count: 2 !important;
                 column-fill: auto !important;
                 column-gap: 2rem !important;
-                column-rule: 1px solid rgba(128, 128, 128, 0.35) !important;
+                column-rule: none !important;
                 scroll-behavior: auto !important;
                 scroll-snap-type: none !important;
                 scrollbar-width: none !important;
@@ -629,13 +629,13 @@
                 z-index: 2147483645 !important;
             }
 
-            .${ACTIVE_CONTENT_CLASS}::after {
+            #${TOUCH_TARGETS_ID}::after {
                 background: rgba(128, 128, 128, 0.35);
                 bottom: 4.5rem;
                 content: "";
                 left: 50%;
                 pointer-events: none;
-                position: absolute;
+                position: fixed;
                 top: 3.75rem;
                 width: 1px;
             }
