@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Royal Road Foldable Chapter UI
 // @namespace    https://github.com/royal-road-foldable-ui
-// @version      1.0.5
+// @version      1.0.6
 // @description  Displays Royal Road chapters as two-column, page-flippable spreads on foldable phones in landscape mode.
 // @match        https://www.royalroad.com/fiction/*/chapter/*
 // @match        https://royalroad.com/fiction/*/chapter/*
@@ -43,8 +43,19 @@
     let resizeTimer = null;
     let refreshTimer = null;
     let navigationFrame = null;
+    const TOUCH_DRAG_THRESHOLD = 8;
+    const TOUCH_SWIPE_DISTANCE = 40;
+    const TOUCH_REVERSE_DISTANCE = 24;
+
     let touchStartX = null;
     let touchStartY = null;
+    let touchStartScrollLeft = 0;
+    let touchPeakDeltaX = 0;
+    let touchLastX = null;
+    let touchLastMoveTime = 0;
+    let touchVelocityX = 0;
+    let touchGestureAxis = null;
+    let suppressClickUntil = 0;
     let readerSuspended = false;
     // Content position of the current page, captured on every user-initiated
     // page change while the layout is known to be valid. Used to keep the
@@ -988,7 +999,10 @@
         // Only snap if we are off a page boundary; unconditionally assigning
         // scrollLeft here would cancel in-flight smooth page turns whenever
         // unrelated DOM mutations (ads, comments) trigger a refresh.
-        if (Math.abs(contentElement.scrollLeft - targetLeft) > 1) {
+        if (
+            touchGestureAxis !== "horizontal" &&
+            Math.abs(contentElement.scrollLeft - targetLeft) > 1
+        ) {
             contentElement.scrollLeft = targetLeft;
         }
         if (resetToStart || lastReaderPosition === null) {
@@ -1086,13 +1100,21 @@
     }
 
     function handleScroll() {
-        if (!contentElement || navigationFrame !== null) {
+        if (
+            !contentElement ||
+            touchGestureAxis === "horizontal" ||
+            navigationFrame !== null
+        ) {
             return;
         }
 
         navigationFrame = window.requestAnimationFrame(() => {
             navigationFrame = null;
-            if (!contentElement || contentElement.clientWidth === 0) {
+            if (
+                !contentElement ||
+                touchGestureAxis === "horizontal" ||
+                contentElement.clientWidth === 0
+            ) {
                 return;
             }
 
@@ -1108,56 +1130,189 @@
         });
     }
 
+    function resetTouchState() {
+        touchStartX = null;
+        touchStartY = null;
+        touchStartScrollLeft = 0;
+        touchPeakDeltaX = 0;
+        touchLastX = null;
+        touchLastMoveTime = 0;
+        touchVelocityX = 0;
+        touchGestureAxis = null;
+    }
+
+    function snapToNearestPage() {
+        if (!contentElement || contentElement.clientWidth <= 0) {
+            return;
+        }
+        const nearestPage = Math.round(
+            contentElement.scrollLeft / contentElement.clientWidth
+        );
+        goToPage(nearestPage, "smooth");
+    }
+
     function handleTouchStart(event) {
-        if (event.touches.length !== 1) {
-            touchStartX = null;
-            touchStartY = null;
+        if (!contentElement || event.touches.length !== 1) {
+            if (touchGestureAxis === "horizontal") {
+                snapToNearestPage();
+            }
+            resetTouchState();
             return;
         }
 
-        touchStartX = event.touches[0].clientX;
-        touchStartY = event.touches[0].clientY;
+        const touch = event.touches[0];
+        touchStartX = touch.clientX;
+        touchStartY = touch.clientY;
+        touchStartScrollLeft = contentElement.scrollLeft;
+        touchPeakDeltaX = 0;
+        touchLastX = touch.clientX;
+        touchLastMoveTime = performance.now();
+        touchVelocityX = 0;
+        touchGestureAxis = null;
+    }
+
+    function handleTouchMove(event) {
+        if (
+            !contentElement ||
+            touchStartX === null ||
+            touchStartY === null ||
+            event.touches.length !== 1
+        ) {
+            return;
+        }
+
+        const touch = event.touches[0];
+        const deltaX = touch.clientX - touchStartX;
+        const deltaY = touch.clientY - touchStartY;
+
+        if (touchGestureAxis === null) {
+            if (
+                Math.abs(deltaX) < TOUCH_DRAG_THRESHOLD &&
+                Math.abs(deltaY) < TOUCH_DRAG_THRESHOLD
+            ) {
+                return;
+            }
+            touchGestureAxis =
+                Math.abs(deltaX) >= Math.abs(deltaY)
+                    ? "horizontal"
+                    : "vertical";
+        }
+
+        if (touchGestureAxis !== "horizontal") {
+            return;
+        }
+
+        if (event.cancelable) {
+            event.preventDefault();
+        }
+
+        const now = performance.now();
+        const dt = now - touchLastMoveTime;
+        if (dt > 0 && touchLastX !== null) {
+            touchVelocityX = (touch.clientX - touchLastX) / dt;
+        }
+        touchLastX = touch.clientX;
+        touchLastMoveTime = now;
+
+        if (Math.abs(deltaX) > Math.abs(touchPeakDeltaX)) {
+            touchPeakDeltaX = deltaX;
+        }
+
+        const maxScrollLeft = Math.max(
+            0,
+            (pageCount - 1) * contentElement.clientWidth
+        );
+        contentElement.scrollLeft = Math.max(
+            0,
+            Math.min(maxScrollLeft, touchStartScrollLeft - deltaX)
+        );
     }
 
     function handleTouchEnd(event) {
         if (
+            !contentElement ||
             touchStartX === null ||
             touchStartY === null ||
             event.changedTouches.length !== 1
         ) {
-            touchStartX = null;
-            touchStartY = null;
+            if (touchGestureAxis === "horizontal") {
+                snapToNearestPage();
+            }
+            resetTouchState();
             return;
         }
 
         const touch = event.changedTouches[0];
         const horizontalDistance = touch.clientX - touchStartX;
         const verticalDistance = touch.clientY - touchStartY;
-        const isHorizontalSwipe =
-            Math.abs(horizontalDistance) >= 40 &&
-            Math.abs(horizontalDistance) > Math.abs(verticalDistance);
-        const isVerticalSwipe =
-            Math.abs(verticalDistance) >= 40 &&
-            Math.abs(verticalDistance) > Math.abs(horizontalDistance);
+        const axis = touchGestureAxis;
+        const peakDeltaX = touchPeakDeltaX;
+        const velocityX = touchVelocityX;
+        const startPage =
+            contentElement.clientWidth > 0
+                ? Math.round(touchStartScrollLeft / contentElement.clientWidth)
+                : pageIndex;
 
-        if (isHorizontalSwipe) {
-            event.preventDefault();
-            goToPage(
-                pageIndex + (horizontalDistance < 0 ? 1 : -1),
-                "auto"
-            );
-        } else if (isVerticalSwipe) {
-            event.preventDefault();
-            leaveReader(verticalDistance < 0 ? "next" : "previous");
+        resetTouchState();
+
+        if (axis !== null) {
+            suppressClickUntil = performance.now() + 100;
         }
 
-        touchStartX = null;
-        touchStartY = null;
+        if (axis === "horizontal") {
+            if (event.cancelable) {
+                event.preventDefault();
+            }
+            const width = contentElement.clientWidth;
+            if (width <= 0) {
+                return;
+            }
+
+            let targetPage = Math.round(contentElement.scrollLeft / width);
+            const swipedEnough =
+                Math.abs(horizontalDistance) >= TOUCH_SWIPE_DISTANCE;
+            const reversedDirection =
+                (horizontalDistance < 0 &&
+                    (velocityX > 0.05 ||
+                        horizontalDistance - peakDeltaX >
+                            TOUCH_REVERSE_DISTANCE)) ||
+                (horizontalDistance > 0 &&
+                    (velocityX < -0.05 ||
+                        peakDeltaX - horizontalDistance >
+                            TOUCH_REVERSE_DISTANCE));
+
+            if (swipedEnough && !reversedDirection && horizontalDistance !== 0) {
+                targetPage = startPage + (horizontalDistance < 0 ? 1 : -1);
+            }
+
+            // Clamp to at most one page from startPage so swipes never
+            // momentum-scroll across multiple pages.
+            targetPage = Math.max(
+                startPage - 1,
+                Math.min(startPage + 1, targetPage)
+            );
+            goToPage(targetPage, "smooth");
+            return;
+        }
+
+        const isVerticalSwipe =
+            (axis === "vertical" ||
+                Math.abs(verticalDistance) > Math.abs(horizontalDistance)) &&
+            Math.abs(verticalDistance) >= TOUCH_SWIPE_DISTANCE;
+
+        if (isVerticalSwipe) {
+            if (event.cancelable) {
+                event.preventDefault();
+            }
+            leaveReader(verticalDistance < 0 ? "next" : "previous");
+        }
     }
 
     function handleTouchCancel() {
-        touchStartX = null;
-        touchStartY = null;
+        if (touchGestureAxis === "horizontal") {
+            snapToNearestPage();
+        }
+        resetTouchState();
     }
 
     function findCommentSection() {
@@ -1654,6 +1809,9 @@
             element.addEventListener("touchstart", handleTouchStart, {
                 passive: true
             });
+            element.addEventListener("touchmove", handleTouchMove, {
+                passive: false
+            });
             element.addEventListener("touchend", handleTouchEnd, {
                 passive: false
             });
@@ -1673,6 +1831,7 @@
             contentElement.removeEventListener("load", handleContentLoad, true);
             contentElement.removeEventListener("scroll", handleScroll);
             contentElement.removeEventListener("touchstart", handleTouchStart);
+            contentElement.removeEventListener("touchmove", handleTouchMove);
             contentElement.removeEventListener("touchend", handleTouchEnd);
             contentElement.removeEventListener("touchcancel", handleTouchCancel);
         }
@@ -1710,6 +1869,7 @@
         titleElement = null;
         authorNoteElements = [];
         siteHeaderElement = null;
+        resetTouchState();
         pageIndex = 0;
         pageCount = 1;
     }
@@ -2035,8 +2195,7 @@
         readerSuspended = false;
         lastReaderPosition = null;
         documentPositionSample = null;
-        touchStartX = null;
-        touchStartY = null;
+        resetTouchState();
         pageIndex = 0;
         window.scrollTo({ top: 0, left: 0, behavior: "instant" });
         refresh();
@@ -2097,6 +2256,13 @@
     }
 
     function handleDocumentClickCapture(event) {
+        if (performance.now() < suppressClickUntil) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            return;
+        }
+
         if (
             !event.defaultPrevented &&
             event.button === 0 &&
