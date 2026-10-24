@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         Royal Road Foldable Chapter UI
 // @namespace    https://github.com/royal-road-foldable-ui
-// @version      1.0.9
-// @description  Displays Royal Road chapters as two-column, page-flippable spreads on foldable phones in landscape mode.
+// @version      1.0.10
+// @description  Displays Royal Road chapters as two-column, page-flippable spreads on foldable phones and desktop screens in landscape mode.
+// @license      MIT
 // @match        https://www.royalroad.com/fiction/*/chapter/*
 // @match        https://royalroad.com/fiction/*/chapter/*
 // @run-at       document-idle
