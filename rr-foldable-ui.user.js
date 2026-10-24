@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Royal Road Foldable Chapter UI
 // @namespace    https://github.com/royal-road-foldable-ui
-// @version      1.0.8
+// @version      1.0.9
 // @description  Displays Royal Road chapters as two-column, page-flippable spreads on foldable phones in landscape mode.
 // @match        https://www.royalroad.com/fiction/*/chapter/*
 // @match        https://royalroad.com/fiction/*/chapter/*
@@ -21,12 +21,14 @@
     const NEXT_CHAPTER_CLASS = "rrf-foldable-next-chapter";
     const HIDDEN_HEADER_CLASS = "rrf-foldable-hidden-header";
     const TOUCH_TARGETS_ID = "rrf-foldable-touch-targets";
+    const RESUME_BUTTON_ID = "rrf-foldable-resume";
     const HIDDEN_FEEDBACK_CLASS = "rrf-foldable-hidden-feedback";
     const MOBILE_LANDSCAPE_QUERY =
-        "(orientation: landscape) and (min-width: 600px) and (max-width: 1000px)";
+        "(orientation: landscape) and (min-width: 600px)";
 
     let contentElement = null;
     let controlsElement = null;
+    let resumeButtonElement = null;
     let titleElement = null;
     let authorNoteElements = [];
     let authorNoteSources = new Map();
@@ -508,7 +510,7 @@
         );
     }
 
-    function applyReaderColors(content) {
+    function getReaderColors(content) {
         const foreground = window.getComputedStyle(content).color;
         let background = null;
 
@@ -524,7 +526,7 @@
             }
         }
 
-        readerColors = {
+        return {
             background:
                 background ||
                 (window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -532,6 +534,10 @@
                     : "rgb(255, 255, 255)"),
             foreground
         };
+    }
+
+    function applyReaderColors(content) {
+        readerColors = getReaderColors(content);
         originalReaderColorProperties = {
             background: content.style.getPropertyValue("--rrf-page-background"),
             backgroundPriority: content.style.getPropertyPriority(
@@ -816,6 +822,7 @@
             #${TOUCH_TARGETS_ID} button {
                 background: transparent;
                 border: 0;
+                cursor: pointer;
                 flex: 0 0 14%;
                 margin: 0;
                 opacity: 0;
@@ -851,6 +858,7 @@
                 border: 1px solid transparent;
                 border-radius: 0.4rem;
                 color: inherit;
+                cursor: pointer;
                 display: inline-flex;
                 font: inherit;
                 justify-content: center;
@@ -860,11 +868,17 @@
                 touch-action: manipulation;
             }
 
+            #${CONTROLS_ID} button:disabled {
+                cursor: default;
+                opacity: 0.4;
+            }
+
             #${CONTROLS_ID} a {
                 align-items: center;
                 border: 1px solid transparent;
                 border-radius: 0.4rem;
                 color: inherit;
+                cursor: pointer;
                 display: inline-flex;
                 font: inherit;
                 justify-content: center;
@@ -874,8 +888,10 @@
                 touch-action: manipulation;
             }
 
-            #${CONTROLS_ID} button:active,
+            #${CONTROLS_ID} button:hover:not(:disabled),
+            #${CONTROLS_ID} button:active:not(:disabled),
             #${CONTROLS_ID} button:focus-visible,
+            #${CONTROLS_ID} a:hover,
             #${CONTROLS_ID} a:active,
             #${CONTROLS_ID} a:focus-visible {
                 background: color-mix(in srgb, currentColor 12%, transparent);
@@ -886,6 +902,41 @@
                 color: inherit;
                 min-width: 5rem;
                 text-align: center;
+            }
+
+            #${RESUME_BUTTON_ID} {
+                align-items: center;
+                background: var(--rrf-page-background, #181a1b);
+                border: 1px solid
+                    color-mix(
+                        in srgb,
+                        var(--rrf-page-foreground, #e8e6e3) 30%,
+                        transparent
+                    );
+                border-radius: 0.4rem;
+                bottom: 1rem;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+                color: var(--rrf-page-foreground, #e8e6e3);
+                cursor: pointer;
+                display: inline-flex;
+                font: inherit;
+                justify-content: center;
+                min-height: 2.75rem;
+                padding: 0.35rem 0.85rem;
+                position: fixed;
+                right: 1rem;
+                touch-action: manipulation;
+                z-index: 2147483647;
+            }
+
+            #${RESUME_BUTTON_ID}:hover,
+            #${RESUME_BUTTON_ID}:active,
+            #${RESUME_BUTTON_ID}:focus-visible {
+                background: color-mix(
+                    in srgb,
+                    var(--rrf-page-foreground, #e8e6e3) 12%,
+                    var(--rrf-page-background, #181a1b)
+                );
             }
         `;
         document.head.appendChild(style);
@@ -1057,6 +1108,8 @@
             <button type="button" data-direction="previous" aria-label="Previous page">‹</button>
             <span id="rrf-foldable-page" aria-live="polite"></span>
             <button type="button" data-direction="next" aria-label="Next page">›</button>
+            <button type="button" data-action="normal-view" aria-label="Switch to normal view">Normal view</button>
+            <button type="button" data-action="comments" aria-label="Visit comments">Comments</button>
         `;
         const previousChapter = findChapterLink("previous");
         const nextChapter = findChapterLink("next");
@@ -1076,6 +1129,18 @@
             controls.appendChild(nextLink);
         }
         controls.addEventListener("click", (event) => {
+            const actionButton =
+                event.target instanceof Element
+                    ? event.target.closest("button[data-action]")
+                    : null;
+            if (actionButton instanceof HTMLButtonElement) {
+                leaveReader(
+                    actionButton.dataset.action === "comments"
+                        ? "comments"
+                        : "current"
+                );
+                return;
+            }
             const button =
                 event.target instanceof Element
                     ? event.target.closest("button[data-direction]")
@@ -1087,6 +1152,53 @@
         });
         document.body.appendChild(controls);
         controlsElement = controls;
+    }
+
+    function ensureResumeButton() {
+        if (resumeButtonElement && resumeButtonElement.isConnected) {
+            return;
+        }
+        addStyles();
+        const content = findChapterContent();
+        const colors = content ? getReaderColors(content) : readerColors;
+        const button = document.createElement("button");
+        button.id = RESUME_BUTTON_ID;
+        button.type = "button";
+        button.textContent = "Reader view";
+        button.setAttribute("aria-label", "Switch to reader view");
+        if (colors) {
+            button.style.setProperty(
+                "--rrf-page-background",
+                colors.background
+            );
+            button.style.setProperty(
+                "--rrf-page-foreground",
+                colors.foreground
+            );
+        }
+        button.addEventListener("click", () => {
+            if (isCommentLink()) {
+                const url = new URL(window.location.href);
+                url.searchParams.delete("comment");
+                url.hash = "";
+                window.history.replaceState(
+                    window.history.state,
+                    "",
+                    url.toString()
+                );
+            }
+            readerSuspended = false;
+            refresh();
+        });
+        document.body.appendChild(button);
+        resumeButtonElement = button;
+    }
+
+    function removeResumeButton() {
+        if (resumeButtonElement) {
+            resumeButtonElement.remove();
+            resumeButtonElement = null;
+        }
     }
 
     function handleKeydown(event) {
@@ -1740,11 +1852,17 @@
             return;
         }
 
-        const goToComments = direction === "next" && pageIndex >= pageCount - 1;
-        const position = goToComments ? null : captureReaderPosition();
+        const goToComments =
+            direction === "comments" ||
+            (direction === "next" && pageIndex >= pageCount - 1);
+        const position = captureReaderPosition();
+        if (position) {
+            lastReaderPosition = position;
+        }
 
         readerSuspended = true;
         deactivate();
+        ensureResumeButton();
 
         if (goToComments) {
             scrollDocumentTo(() => {
@@ -1790,12 +1908,14 @@
         }
 
         deactivate();
+        removeResumeButton();
         // Work out which content is at the top of the screen, then reset the
         // document scroll before taking the chapter out of the flow. Leaving
         // the document scrolled deep (e.g. after reading in portrait) while
         // the page collapses to header + footer is what let the footer show
         // through on Firefox for Android; a fresh load never has this problem.
-        const documentPosition = takeDocumentPosition(content);
+        const documentPosition =
+            takeDocumentPosition(content) ?? lastReaderPosition;
         cancelPendingDocumentScroll?.();
         window.scrollTo({ top: 0, left: 0, behavior: "instant" });
         addStyles();
@@ -1889,6 +2009,11 @@
         if (isCommentLink()) {
             readerSuspended = false;
             deactivate();
+            if (isSupportedViewport() && findChapterContent()) {
+                ensureResumeButton();
+            } else {
+                removeResumeButton();
+            }
             return;
         }
 
@@ -1896,6 +2021,7 @@
             // Folding the phone / rotating to portrait leaves the reader too:
             // land on the content that was being read, not the page top.
             readerSuspended = false;
+            removeResumeButton();
             if (contentElement) {
                 const position = lastReaderPosition;
                 deactivate();
@@ -1906,6 +2032,7 @@
         }
 
         if (readerSuspended) {
+            ensureResumeButton();
             return;
         }
 
@@ -2472,8 +2599,10 @@
         if (
             mutations.some(
                 (mutation) =>
-                    !controlsElement ||
-                    !controlsElement.contains(mutation.target)
+                    (!controlsElement ||
+                        !controlsElement.contains(mutation.target)) &&
+                    (!resumeButtonElement ||
+                        !resumeButtonElement.contains(mutation.target))
             )
         ) {
             scheduleRefresh();
