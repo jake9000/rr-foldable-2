@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Royal Road Foldable Chapter UI
 // @namespace    https://github.com/royal-road-foldable-ui
-// @version      1.0.7
+// @version      1.0.8
 // @description  Displays Royal Road chapters as two-column, page-flippable spreads on foldable phones in landscape mode.
 // @match        https://www.royalroad.com/fiction/*/chapter/*
 // @match        https://royalroad.com/fiction/*/chapter/*
@@ -629,15 +629,23 @@
                 z-index: 2147483645 !important;
             }
 
-            #${TOUCH_TARGETS_ID}::after {
-                background: rgba(128, 128, 128, 0.35);
+            .${ACTIVE_CONTENT_CLASS}::after {
+                background-image: linear-gradient(
+                    to right,
+                    transparent calc(50% - 0.5px),
+                    rgba(128, 128, 128, 0.35) calc(50% - 0.5px),
+                    rgba(128, 128, 128, 0.35) calc(50% + 0.5px),
+                    transparent calc(50% + 0.5px)
+                );
+                background-repeat: repeat-x;
+                background-size: calc(100% / var(--rrf-page-count, 1)) 100%;
                 bottom: 4.5rem;
                 content: "";
-                left: 50%;
+                left: 0;
                 pointer-events: none;
-                position: fixed;
+                position: absolute;
                 top: 3.75rem;
-                width: 1px;
+                width: calc(var(--rrf-page-count, 1) * 100%);
             }
 
             .${ACTIVE_CONTENT_CLASS}::-webkit-scrollbar {
@@ -980,10 +988,12 @@
             return;
         }
 
+        contentElement.style.setProperty("--rrf-page-count", "1");
         pageCount = Math.max(
             1,
             Math.ceil(contentElement.scrollWidth / contentElement.clientWidth)
         );
+        contentElement.style.setProperty("--rrf-page-count", String(pageCount));
         // Open on the page holding the tracked content: after a reflow (resize,
         // image load, note toggle, ads) that is the page being read; on
         // activation it is whatever was at the top of the normal page.
@@ -1828,6 +1838,7 @@
     function deactivate() {
         if (contentElement) {
             contentElement.classList.remove(ACTIVE_CONTENT_CLASS);
+            contentElement.style.removeProperty("--rrf-page-count");
             contentElement.removeEventListener("load", handleContentLoad, true);
             contentElement.removeEventListener("scroll", handleScroll);
             contentElement.removeEventListener("touchstart", handleTouchStart);
