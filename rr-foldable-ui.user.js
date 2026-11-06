@@ -2,7 +2,7 @@
 // @name         Dual Column Reading Mode for Royal Road
 // @namespace    https://github.com/royal-road-foldable-ui
 // @version      1.0.11
-// @description  Displays Royal Road chapters as two-column, page-flippable spreads on foldable phones and desktop screens in landscape mode, and collapses shout-out author notes.
+// @description  Dual column paginated layout for reading chapters, modeled after Kindle. Responsively switch between dual and single column depending on screen orientation. Made for folding phones, but works on any tablet or computer screen. 
 // @license      MIT
 // @match        https://www.royalroad.com/fiction/*/chapter/*
 // @match        https://royalroad.com/fiction/*/chapter/*
