@@ -1,10 +1,10 @@
 # Foldable UI for Royalroad
 
-Adds a dual column layout with page flipping to royalroad.com when viewing chapters in landscape mode on foldable phones, tablets, and desktop screens.
+Responsively switch between single column and dual column layout when reading text on royalroad.com. 
 
 I use this on a folding phone (Samsung Z fold 8). When I open or close the device, it seamlessly transitions between normal and dual column layouts.
 
-bonus feature: If an author's note contains a shout-out (detected as a link to another RR novel) the author's note will be collapsed. This is because they look horrible in dual column layout, sorry!
+bonus feature: If an author's note contains a shout-out (detected as an image and link to another RR novel) the author's note will be collapsed. This is because they look horrible in dual column layout, sorry!
 
 This has primarily been tested against firefox for android with the violentmonkey extension.
 
