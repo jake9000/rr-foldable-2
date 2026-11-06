@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Royal Road Foldable Chapter UI
+// @name         Dual Column Reading Mode for Royal Road
 // @namespace    https://github.com/royal-road-foldable-ui
 // @version      1.0.11
 // @description  Displays Royal Road chapters as two-column, page-flippable spreads on foldable phones and desktop screens in landscape mode, and collapses shout-out author notes.
